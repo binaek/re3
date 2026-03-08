@@ -55,6 +55,25 @@ func newLazyDFA(root Node, minterms *MintermTable) *lazyDFA {
 	return dfa
 }
 
+// getNextStateCached returns the next state ID if already cached; otherwise (0, false).
+// Used by ConcurrentRegExp for a read-only fast path under RLock.
+func (dfa *lazyDFA) getNextStateCached(stateID, mintermID int) (nextStateID int, cached bool) {
+	if stateID == dfa.deadStateID {
+		return dfa.deadStateID, true
+	}
+	if stateID < 0 || stateID >= len(dfa.transitions) {
+		return 0, false
+	}
+	row := dfa.transitions[stateID]
+	if row == nil {
+		return 0, false
+	}
+	if row[mintermID] >= 0 {
+		return row[mintermID], true
+	}
+	return 0, false
+}
+
 // getNextState returns the next state ID after reading mintermID from stateID.
 // It computes and caches the derivative on first access.
 func (dfa *lazyDFA) getNextState(stateID, mintermID int) int {
