@@ -326,32 +326,33 @@ func (dfa *lazyTDFA) isAccepting(stateID int) bool {
 }
 
 // runTDFA runs the TDFA on s (typically the match span from two-pass) and fills
-// capture[1..numCaptures] with [start, end] byte indices. capture[0] is the full match.
-func (dfa *lazyTDFA) runTDFA(s string) [][]int {
+// a flat []int of length (numCaptures+1)*2: for slot i, start=capture[2*i], end=capture[2*i+1].
+// Slot 0 is the full match; slots 1..numCaptures are capture groups. -1 means unmatched.
+func (dfa *lazyTDFA) runTDFA(s string) []int {
 	ncap := dfa.numCaptures + 1
-	capture := make([][]int, ncap)
-	for i := range capture {
-		capture[i] = []int{-1, -1}
+	capture := make([]int, ncap*2)
+	for i := 0; i < ncap*2; i++ {
+		capture[i] = -1
 	}
 	state := 0
 	pos := 0
 	for pos <= len(s) {
 		if dfa.isAccepting(state) {
-			capture[0][0] = 0
-			capture[0][1] = pos
+			capture[0] = 0
+			capture[1] = pos
 		}
 		if pos >= len(s) {
 			break
 		}
 		r, size := utf8.DecodeRuneInString(s[pos:])
-	mintermID := dfa.minterms.runeToClass(r)
+		mintermID := dfa.minterms.runeToClass(r)
 		nextState, tags := dfa.getNextState(state, mintermID)
 		for _, t := range tags {
 			if t.Id >= ncap {
 				continue
 			}
 			if t.IsStart {
-				capture[t.Id][0] = pos
+				capture[t.Id*2] = pos
 			}
 		}
 		state = nextState
@@ -361,7 +362,7 @@ func (dfa *lazyTDFA) runTDFA(s string) [][]int {
 				continue
 			}
 			if !t.IsStart {
-				capture[t.Id][1] = pos
+				capture[t.Id*2+1] = pos
 			}
 		}
 	}
@@ -371,9 +372,9 @@ func (dfa *lazyTDFA) runTDFA(s string) [][]int {
 	if !dfa.isAccepting(state) {
 		return nil
 	}
-	if capture[0][0] < 0 {
-		capture[0][0] = 0
-		capture[0][1] = pos
+	if capture[0] < 0 {
+		capture[0] = 0
+		capture[1] = pos
 	}
 	return capture
 }

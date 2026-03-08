@@ -166,20 +166,37 @@ func compile(expr string) (RegExp, error) {
 
 // extractLiteralPrefix returns the longest literal prefix of the pattern (required at start).
 // Used to fast-forward FindStringIndex via strings.Index; empty means no literal prefix.
+// Only appends right side of concat when left is a pure literal chain (avoids false negatives like (a|b)c).
 func extractLiteralPrefix(n node) string {
-	switch node := n.(type) {
+	switch nd := n.(type) {
 	case *literalNode:
-		return string(node.Value)
+		return string(nd.Value)
 	case *concatNode:
-		return extractLiteralPrefix(node.Left) + extractLiteralPrefix(node.Right)
+		left := extractLiteralPrefix(nd.Left)
+		if isExactLiteral(nd.Left) {
+			return left + extractLiteralPrefix(nd.Right)
+		}
+		return left
 	case *groupNode:
-		return extractLiteralPrefix(node.Child)
+		return extractLiteralPrefix(nd.Child)
 	case *starNode, *unionNode, *anyNode, *falseNode, *emptyNode,
 		*charClassNode, *lookAheadNode, *lookBehindNode, *tagNode,
 		*complementNode, *intersectNode:
 		return ""
 	default:
 		return ""
+	}
+}
+
+// isExactLiteral reports whether n is a chain of only literal nodes (no alternation, classes, etc.).
+func isExactLiteral(n node) bool {
+	switch nd := n.(type) {
+	case *literalNode:
+		return true
+	case *concatNode:
+		return isExactLiteral(nd.Left) && isExactLiteral(nd.Right)
+	default:
+		return false
 	}
 }
 

@@ -34,6 +34,7 @@ var findTests = []struct {
 	{"alternation", "a|b", "b", build(0, 1)},
 	{"concat", "hello", "hello world", build(0, 5)},
 	{"char class", "[a-z]+", "abc123", build(0, 3)},
+	{"alt then literal no false skip", "(a|b)c", "xac", build(1, 3)}, // prefix must not include "c" from right of non-literal left
 	{"empty match at start", "a*", "bbb", build(0, 0, 1, 1, 2, 2, 3, 3)},
 	{"multiple potential", "a*", "aaab", build(0, 3, 3, 3, 4, 4)},
 	{"complement", "~(.*x.*)", "abc", build(0, 3, 3, 3)},

@@ -340,8 +340,9 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 	out := make([]string, 1+re.CaptureCount)
 	out[0] = match
 	for i := 1; i <= re.CaptureCount; i++ {
-		if i < len(capture) && capture[i][0] >= 0 && capture[i][1] >= capture[i][0] {
-			out[i] = span[capture[i][0]:capture[i][1]]
+		start, end := capture[2*i], capture[2*i+1]
+		if start >= 0 && end >= start {
+			out[i] = span[start:end]
 		} else {
 			out[i] = ""
 		}
@@ -375,8 +376,9 @@ func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
 				row := make([]string, 1+re.CaptureCount)
 				row[0] = span
 				for i := 1; i <= re.CaptureCount; i++ {
-					if i < len(capture) && capture[i][0] >= 0 && capture[i][1] >= capture[i][0] {
-						row[i] = span[capture[i][0]:capture[i][1]]
+					start, end := capture[2*i], capture[2*i+1]
+					if start >= 0 && end >= start {
+						row[i] = span[start:end]
 					} else {
 						row[i] = ""
 					}
