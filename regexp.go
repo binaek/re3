@@ -1,6 +1,9 @@
 package re3
 
-import "unicode/utf8"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // regexpImpl is the default lock-free implementation of RegExp.
 type regexpImpl struct {
@@ -8,7 +11,8 @@ type regexpImpl struct {
 	forward      *lazyDFA
 	unanchored   *lazyDFA
 	reverse      *lazyDFA
-	CaptureCount int       // number of capture groups (GroupNodes)
+	prefix       string   // optional literal prefix for Find fast-forward; empty means none
+	CaptureCount int      // number of capture groups (GroupNodes)
 	forwardTDFA  *lazyTDFA // built lazily when a submatch API is used
 }
 
@@ -20,6 +24,7 @@ func (re *regexpImpl) Clone() RegExp {
 		forward:      newLazyDFA(re.forward.root, re.minterms),
 		unanchored:   newLazyDFA(re.unanchored.root, re.minterms),
 		reverse:      newLazyDFA(re.reverse.root, re.minterms),
+		prefix:       re.prefix,
 		CaptureCount: re.CaptureCount,
 		// forwardTDFA not copied; built on first submatch use
 	}
@@ -59,12 +64,20 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 		return nil
 	}
 
+	bytePos := 0
+	if len(re.prefix) > 0 {
+		idx := strings.Index(s[bytePos:], re.prefix)
+		if idx < 0 {
+			return nil
+		}
+		bytePos += idx
+	}
+
 	firstEnd := -1
 	if re.unanchored.isAccepting(0) {
 		firstEnd = 0
 	}
 	state := 0
-	bytePos := 0
 	for firstEnd == -1 && bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
 		mintermID := re.minterms.RuneToClass(r)
@@ -89,7 +102,9 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 		bytePos -= size
 		mintermID := re.minterms.RuneToClass(r)
 		revState = re.reverse.getNextState(revState, mintermID)
-
+		if revState == re.reverse.deadStateID {
+			break
+		}
 		if re.reverse.isAccepting(revState) {
 			leftmostStart = bytePos
 		}

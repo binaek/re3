@@ -1,6 +1,7 @@
 package re3
 
 import (
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -91,12 +92,19 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 		}
 		return nil, false
 	}
+	bytePos := 0
+	if len(re.prefix) > 0 {
+		idx := strings.Index(s[bytePos:], re.prefix)
+		if idx < 0 {
+			return nil, false
+		}
+		bytePos += idx
+	}
 	firstEnd := -1
 	if re.unanchored.isAccepting(0) {
 		firstEnd = 0
 	}
 	state := 0
-	bytePos := 0
 	for firstEnd == -1 && bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
 		mintermID := re.minterms.RuneToClass(r)
@@ -126,6 +134,9 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 			return nil, true
 		}
 		revState = next
+		if revState == re.reverse.deadStateID {
+			break
+		}
 		if re.reverse.isAccepting(revState) {
 			leftmostStart = bytePos
 		}

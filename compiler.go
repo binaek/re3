@@ -161,6 +161,7 @@ func Compile(expr string) (RegExp, error) {
 		forward:      newLazyDFA(ast, minterms),
 		unanchored:   newLazyDFA(unanchoredAST, minterms),
 		reverse:      newLazyDFA(revAST, minterms),
+		prefix:       extractLiteralPrefix(ast),
 		CaptureCount: countCaptureGroups(ast),
 	}, nil
 }
@@ -184,6 +185,25 @@ func Concurrent(re RegExp) RegExp {
 		return &concurrentRegExpImpl{re: impl}
 	}
 	return re
+}
+
+// extractLiteralPrefix returns the longest literal prefix of the pattern (required at start).
+// Used to fast-forward FindStringIndex via strings.Index; empty means no literal prefix.
+func extractLiteralPrefix(n Node) string {
+	switch node := n.(type) {
+	case *LiteralNode:
+		return string(node.Value)
+	case *ConcatNode:
+		return extractLiteralPrefix(node.Left) + extractLiteralPrefix(node.Right)
+	case *GroupNode:
+		return extractLiteralPrefix(node.Child)
+	case *StarNode, *UnionNode, *AnyNode, *FalseNode, *EmptyNode,
+		*CharClassNode, *LookAheadNode, *LookBehindNode, *TagNode,
+		*ComplementNode, *IntersectNode:
+		return ""
+	default:
+		return ""
+	}
 }
 
 // --- MINTERM COMPRESSION LOGIC ---
