@@ -49,7 +49,13 @@ func (n *LiteralNode) String() string { return fmt.Sprintf("Lit(%c)", n.Value) }
 type AnyNode struct{}
 
 func (n *AnyNode) Nullable() bool            { return false }
-func (n *AnyNode) Derivative(char rune) Node { return &EmptyNode{} }
+func (n *AnyNode) Derivative(char rune) Node {
+	// Match any rune except newline, aligning with Go regexp (dot does not match \n by default).
+	if char == '\n' {
+		return &FalseNode{}
+	}
+	return &EmptyNode{}
+}
 func (n *AnyNode) Equals(other Node) bool    { _, ok := other.(*AnyNode); return ok }
 func (n *AnyNode) Reverse() Node             { return n }
 func (n *AnyNode) String() string            { return "Any" }

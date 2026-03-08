@@ -323,8 +323,14 @@ func extractPredicates(node Node) []predicate {
 		preds = append(preds, extractPredicates(n.Child)...)
 	case *LookBehindNode:
 		preds = append(preds, extractPredicates(n.Child)...)
+	case *AnyNode:
+		// Dot does not match newline; ensure \n gets its own minterm class so Derivative('\n') is used.
+		var p predicate
+		for i := 0; i < 256; i++ {
+			p[i] = (byte(i) != '\n')
+		}
+		preds = append(preds, p)
 	}
-
 	return preds
 }
 
