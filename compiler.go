@@ -1,48 +1,155 @@
 package re3
 
+import "sync"
+
+const maxLazyDFAStates = 100_000
+
 // --- TYPES ---
 
 type MintermTable struct {
-	ByteToClass [256]int
-	ClassToByte []byte
-	NumClasses  int
+	ByteToClass   [256]int
+	ClassToByte   []byte
+	ClassToRune   []rune // representative rune per class for derivative (rune-based)
+	NumClasses    int
+	highRuneClass int // class ID for runes >= 256
+}
+
+// RuneToClass returns the minterm class ID for rune r.
+// For r < 256 uses the byte partition; for r >= 256 returns the single "high" class.
+func (m *MintermTable) RuneToClass(r rune) int {
+	if r < 256 {
+		return m.ByteToClass[byte(r)]
+	}
+	return m.highRuneClass
+}
+
+// lazyDFA holds the root AST and lazily computed state cache.
+// It is not safe for concurrent use.
+type lazyDFA struct {
+	root        Node
+	minterms    *MintermTable
+	stateASTs   []Node   // index = state ID; state 0 = root
+	transitions [][]int   // transitions[stateID][mintermID] = nextStateID; -1 = not computed
+	isMatch     []bool    // isMatch[stateID]
+	deadStateID int       // state that never accepts; used when state cap is exceeded
+}
+
+func newLazyDFA(root Node, minterms *MintermTable) *lazyDFA {
+	dead := &FalseNode{}
+	dfa := &lazyDFA{
+		root:        root,
+		minterms:    minterms,
+		stateASTs:   []Node{root, dead},
+		transitions: make([][]int, 2),
+		isMatch:     []bool{root.Nullable(), false},
+		deadStateID: 1,
+	}
+	dfa.transitions[0] = make([]int, minterms.NumClasses)
+	for i := range dfa.transitions[0] {
+		dfa.transitions[0][i] = -1
+	}
+	dfa.transitions[1] = make([]int, minterms.NumClasses)
+	for i := range dfa.transitions[1] {
+		dfa.transitions[1][i] = 1
+	}
+	return dfa
+}
+
+// getNextState returns the next state ID after reading mintermID from stateID.
+// It computes and caches the derivative on first access.
+func (dfa *lazyDFA) getNextState(stateID, mintermID int) int {
+	if stateID == dfa.deadStateID {
+		return dfa.deadStateID
+	}
+	if stateID >= len(dfa.transitions) {
+		return dfa.deadStateID
+	}
+	row := dfa.transitions[stateID]
+	if row == nil {
+		row = make([]int, dfa.minterms.NumClasses)
+		for i := range row {
+			row[i] = -1
+		}
+		dfa.transitions[stateID] = row
+	}
+	if row[mintermID] >= 0 {
+		return row[mintermID]
+	}
+	// Cache miss: compute derivative
+	currentAST := dfa.stateASTs[stateID]
+	r := rune(0)
+	if mintermID < len(dfa.minterms.ClassToRune) {
+		r = dfa.minterms.ClassToRune[mintermID]
+	}
+	nextAST := currentAST.Derivative(r)
+
+	nextStateID := -1
+	for id, seen := range dfa.stateASTs {
+		if seen.Equals(nextAST) {
+			nextStateID = id
+			break
+		}
+	}
+	if nextStateID < 0 {
+		if len(dfa.stateASTs) >= maxLazyDFAStates {
+			row[mintermID] = dfa.deadStateID
+			return dfa.deadStateID
+		}
+		nextStateID = len(dfa.stateASTs)
+		dfa.stateASTs = append(dfa.stateASTs, nextAST)
+		dfa.isMatch = append(dfa.isMatch, nextAST.Nullable())
+		newRow := make([]int, dfa.minterms.NumClasses)
+		for i := range newRow {
+			newRow[i] = -1
+		}
+		dfa.transitions = append(dfa.transitions, newRow)
+	}
+	row[mintermID] = nextStateID
+	return nextStateID
+}
+
+func (dfa *lazyDFA) isAccepting(stateID int) bool {
+	if stateID < 0 || stateID >= len(dfa.isMatch) {
+		return false
+	}
+	return dfa.isMatch[stateID]
 }
 
 // --- THE COMPILER PIPELINE ---
 type RegExp struct {
-	minterms              *MintermTable
-	forwardTransitions    [][]int
-	forwardIsMatch        []bool
-	unanchoredTransitions [][]int // NEW: For the O(n) forward sweep
-	unanchoredIsMatch     []bool  // NEW
-	reverseTransitions    [][]int
-	reverseIsMatch        []bool
+	minterms   *MintermTable
+	forward    *lazyDFA
+	unanchored *lazyDFA
+	reverse    *lazyDFA
 }
 
 type predicate [256]bool
 
 func Compile(expr string) (*RegExp, error) {
 	tokens := NewLexer(expr).LexAll()
-	ast := NewParser(tokens).Parse()
+	for _, tok := range tokens {
+		if tok.Type == TokenError {
+			code := ErrTrailingBackslash
+			if tok.Text == "unclosed character class" {
+				code = ErrMissingBracket
+			}
+			return nil, &Error{Code: code, Expr: expr}
+		}
+	}
+	ast, err := NewParser(tokens, expr).Parse()
+	if err != nil {
+		return nil, err
+	}
 	revAST := ast.Reverse()
 	minterms := buildMintermTable(ast)
 
-	// Build the unanchored AST: .* + your_regex
 	unanchoredAST := NewConcatNode(&StarNode{Child: &AnyNode{}}, ast)
 
-	// Compile the three DFAs
-	ft, fm := compileDFA(ast, minterms)
-	ut, um := compileDFA(unanchoredAST, minterms) // The O(n) forward hunter
-	rt, rm := compileDFA(revAST, minterms)        // The O(n) backward hunter
-
 	return &RegExp{
-		minterms:              minterms,
-		forwardTransitions:    ft,
-		forwardIsMatch:        fm,
-		unanchoredTransitions: ut,
-		unanchoredIsMatch:     um,
-		reverseTransitions:    rt,
-		reverseIsMatch:        rm,
+		minterms:   minterms,
+		forward:    newLazyDFA(ast, minterms),
+		unanchored: newLazyDFA(unanchoredAST, minterms),
+		reverse:    newLazyDFA(revAST, minterms),
 	}, nil
 }
 
@@ -54,7 +161,29 @@ func MustCompile(expr string) *RegExp {
 	return re
 }
 
-// compileDFA generates the state machine using Brzozowski derivatives
+// Clone returns a new RegExp that shares minterms and root ASTs but has fresh
+// lazy DFA caches. Safe to use the original and clone in different goroutines.
+func (re *RegExp) Clone() *RegExp {
+	return &RegExp{
+		minterms:   re.minterms,
+		forward:    newLazyDFA(re.forward.root, re.minterms),
+		unanchored: newLazyDFA(re.unanchored.root, re.minterms),
+		reverse:    newLazyDFA(re.reverse.root, re.minterms),
+	}
+}
+
+// ConcurrentRegExp is a thread-safe wrapper around RegExp.
+type ConcurrentRegExp struct {
+	mu sync.RWMutex
+	re *RegExp
+}
+
+// Concurrent wraps the lock-free RegExp in a thread-safe wrapper.
+func (re *RegExp) Concurrent() *ConcurrentRegExp {
+	return &ConcurrentRegExp{re: re}
+}
+
+// compileDFA is kept for reference / tests that need eager DFA; not used by Compile.
 func compileDFA(root Node, minterms *MintermTable) ([][]int, []bool) {
 	var transitions [][]int
 	var isMatch []bool
@@ -127,17 +256,20 @@ func buildMintermTable(ast Node) *MintermTable {
 	}
 
 	table := &MintermTable{
-		NumClasses:  len(classes),
-		ClassToByte: make([]byte, len(classes)),
+		NumClasses:    len(classes) + 1,
+		ClassToByte:   make([]byte, len(classes)+1),
+		ClassToRune:   make([]rune, len(classes)+1),
+		highRuneClass: len(classes),
 	}
 
 	for classID, classBytes := range classes {
 		table.ClassToByte[classID] = classBytes[0]
+		table.ClassToRune[classID] = rune(classBytes[0])
 		for _, b := range classBytes {
 			table.ByteToClass[b] = classID
 		}
 	}
-
+	table.ClassToRune[table.highRuneClass] = 0x100
 	return table
 }
 
@@ -167,6 +299,10 @@ func extractPredicates(node Node) []predicate {
 	case *StarNode:
 		preds = append(preds, extractPredicates(n.Child)...)
 	case *GroupNode:
+		preds = append(preds, extractPredicates(n.Child)...)
+	case *LookAheadNode:
+		preds = append(preds, extractPredicates(n.Child)...)
+	case *LookBehindNode:
 		preds = append(preds, extractPredicates(n.Child)...)
 	}
 
