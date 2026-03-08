@@ -49,14 +49,14 @@ States are compiled *only* when the engine encounters a new sequence of characte
 Literal prefix extraction allows the engine to skip thousands of dead bytes in a single CPU cycle using AVX/SIMD instructions before the FSM even wakes up.
 
 ### **The RE2 Two-Pass TDFA:** 
-`re3` isolates submatch extraction. Standard boolean queries run on the blazing fast pure DFA. If you need capture groups, the engine locates the exact match bounds first, then spins up a Tagged DFA (TDFA) strictly over the captured span. Zero overhead for non-capturing queries. [Read more](#️tagged-dfa-tdfa--submatch-extraction)
+`re3` isolates submatch extraction. Standard boolean queries run on the blazing fast pure DFA. If you need capture groups, the engine locates the exact match bounds first, then spins up a Tagged DFA (TDFA) strictly over the captured span. Zero overhead for non-capturing queries.
 
 ---
 
 ## 📦 Installation
 
 ```bash
-go get [github.com/binaek/re3](https://github.com/binaek/re3)
+go get github.com/binaek/re3
 
 ```
 
@@ -69,7 +69,7 @@ package main
 
 import (
     "fmt"
-    "[github.com/binaek/re3](https://github.com/binaek/re3)"
+    "github.com/binaek/re3"
 )
 
 func main() {
