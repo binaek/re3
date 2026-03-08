@@ -684,6 +684,8 @@ func BenchmarkMatchStringLong(b *testing.B) {
 func BenchmarkMatch(b *testing.B) {
 	re := MustCompile("a+b+")
 	s := []byte("aaabbb")
+	re.Match(s)
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		re.Match(s)
@@ -693,6 +695,8 @@ func BenchmarkMatch(b *testing.B) {
 func BenchmarkFindStringIndex(b *testing.B) {
 	re := MustCompile("a+b+")
 	s := "xxaaabbbxx"
+	re.FindStringIndex(s)
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		re.FindStringIndex(s)
@@ -702,15 +706,41 @@ func BenchmarkFindStringIndex(b *testing.B) {
 func BenchmarkFindAllString(b *testing.B) {
 	re := MustCompile("\\w+")
 	s := "one two three four five six seven eight nine ten"
+	re.FindAllString(s, -1)
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		re.FindAllString(s, -1)
 	}
 }
 
+func BenchmarkFindAllStringIndex(b *testing.B) {
+	re := MustCompile("\\w+")
+	s := "one two three four five six seven eight nine ten"
+	re.FindAllStringIndex(s, -1)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.FindAllStringIndex(s, -1)
+	}
+}
+
+func BenchmarkSplit(b *testing.B) {
+	re := MustCompile(":")
+	s := "foo:and:bar"
+	re.Split(s, -1)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.Split(s, -1)
+	}
+}
+
 func BenchmarkReplaceAllString(b *testing.B) {
 	re := MustCompile("[cjrw]")
 	s := "abcdefghijklmnopqrstuvwxyz"
+	re.ReplaceAllString(s, "")
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		re.ReplaceAllString(s, "")
@@ -723,4 +753,236 @@ func BenchmarkCompile(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		MustCompile(pat)
 	}
+}
+
+func BenchmarkCompileSimple(b *testing.B) {
+	pat := "a+"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		MustCompile(pat)
+	}
+}
+
+func BenchmarkCompileComplex(b *testing.B) {
+	pat := "(a|b|c)+"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		MustCompile(pat)
+	}
+}
+
+// --- Bounded repetition benchmarks ---
+
+func BenchmarkBoundedRepetitionMatchString(b *testing.B) {
+	re := MustCompile("a{5,10}")
+	s := "aaaaab"
+	re.MatchString(s)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.MatchString(s)
+	}
+}
+
+func BenchmarkBoundedRepetitionFindStringIndex(b *testing.B) {
+	re := MustCompile("[0-9]{2,4}")
+	s := "ab12345cd67890ef"
+	re.FindStringIndex(s)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.FindStringIndex(s)
+	}
+}
+
+func BenchmarkBoundedRepetitionFindAllString(b *testing.B) {
+	re := MustCompile("a{2,}")
+	s := "aaaabaabaaa"
+	re.FindAllString(s, -1)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.FindAllString(s, -1)
+	}
+}
+
+func BenchmarkBoundedRepetitionReplaceAllString(b *testing.B) {
+	re := MustCompile("[0-9]{2}")
+	s := "a12b34c56d78e"
+	re.ReplaceAllString(s, "N")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.ReplaceAllString(s, "N")
+	}
+}
+
+func BenchmarkBoundedRepetitionCompile(b *testing.B) {
+	pat := "a{1,20}"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		MustCompile(pat)
+	}
+}
+
+// --- Concurrency benchmarks (Clone vs Concurrent) ---
+
+func BenchmarkCloneParallel(b *testing.B) {
+	re := MustCompile("a+b+")
+	s := "xxaaabbbxx"
+	re.MatchString(s) // warm original so clones share warm minterms
+	for _, g := range []int{1, 4, 8} {
+		g := g
+		b.Run(fmt.Sprintf("%d-goroutines", g), func(b *testing.B) {
+			clones := make([]*RegExp, g)
+			for i := 0; i < g; i++ {
+				clones[i] = re.Clone()
+				clones[i].MatchString(s) // warm each clone
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			var wg sync.WaitGroup
+			perG := b.N / g
+			for i := 0; i < g; i++ {
+				wg.Add(1)
+				go func(c *RegExp) {
+					defer wg.Done()
+					for j := 0; j < perG; j++ {
+						c.MatchString(s)
+						c.FindStringIndex(s)
+					}
+				}(clones[i])
+			}
+			wg.Wait()
+		})
+	}
+}
+
+func BenchmarkConcurrentParallel(b *testing.B) {
+	cre := MustCompile("a+b+").Concurrent()
+	s := "xxaaabbbxx"
+	cre.MatchString(s)   // warm cache
+	cre.FindStringIndex(s)
+	for _, g := range []int{1, 4, 8} {
+		g := g
+		b.Run(fmt.Sprintf("%d-goroutines", g), func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+			var wg sync.WaitGroup
+			perG := b.N / g
+			for i := 0; i < g; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for j := 0; j < perG; j++ {
+						cre.MatchString(s)
+						cre.FindStringIndex(s)
+					}
+				}()
+			}
+			wg.Wait()
+		})
+	}
+}
+
+// --- Comparison benchmarks (re3 vs standard regexp) ---
+
+func BenchmarkCompareMatchString(b *testing.B) {
+	pat := "a+b+"
+	s := "aaabbb"
+	reRE3 := MustCompile(pat)
+	reStd := regexp.MustCompile(pat)
+	b.Run("re3", func(b *testing.B) {
+		reRE3.MatchString(s)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reRE3.MatchString(s)
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reStd.MatchString(s)
+		}
+	})
+}
+
+func BenchmarkCompareFindStringIndex(b *testing.B) {
+	pat := "a+b+"
+	s := "xxaaabbbxx"
+	reRE3 := MustCompile(pat)
+	reStd := regexp.MustCompile(pat)
+	b.Run("re3", func(b *testing.B) {
+		reRE3.FindStringIndex(s)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reRE3.FindStringIndex(s)
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reStd.FindStringIndex(s)
+		}
+	})
+}
+
+func BenchmarkCompareFindAllString(b *testing.B) {
+	pat := "\\w+"
+	s := "one two three four five six seven eight nine ten"
+	reRE3 := MustCompile(pat)
+	reStd := regexp.MustCompile(pat)
+	b.Run("re3", func(b *testing.B) {
+		reRE3.FindAllString(s, -1)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reRE3.FindAllString(s, -1)
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reStd.FindAllString(s, -1)
+		}
+	})
+}
+
+func BenchmarkCompareReplaceAllString(b *testing.B) {
+	pat := "[cjrw]"
+	s := "abcdefghijklmnopqrstuvwxyz"
+	reRE3 := MustCompile(pat)
+	reStd := regexp.MustCompile(pat)
+	b.Run("re3", func(b *testing.B) {
+		reRE3.ReplaceAllString(s, "")
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reRE3.ReplaceAllString(s, "")
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reStd.ReplaceAllString(s, "")
+		}
+	})
+}
+
+func BenchmarkCompareCompile(b *testing.B) {
+	pat := "a+b+"
+	b.Run("re3", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MustCompile(pat)
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			regexp.MustCompile(pat)
+		}
+	})
 }
