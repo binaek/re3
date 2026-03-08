@@ -279,3 +279,27 @@ func (n *GroupNode) Equals(other Node) bool {
 }
 func (n *GroupNode) Reverse() Node  { return &GroupNode{GroupID: n.GroupID, Child: n.Child.Reverse()} }
 func (n *GroupNode) String() string { return fmt.Sprintf("Group%d(%s)", n.GroupID, n.Child.String()) }
+
+// LookAheadNode is (?=R). Zero-width; does not consume input. Foundation for TDFA.
+type LookAheadNode struct{ Child Node }
+
+func (n *LookAheadNode) Nullable() bool            { return n.Child.Nullable() }
+func (n *LookAheadNode) Derivative(r rune) Node   { return &LookAheadNode{Child: n.Child.Derivative(r)} }
+func (n *LookAheadNode) Equals(other Node) bool {
+	o, ok := other.(*LookAheadNode)
+	return ok && n.Child.Equals(o.Child)
+}
+func (n *LookAheadNode) Reverse() Node  { return n }
+func (n *LookAheadNode) String() string { return fmt.Sprintf("LookAhead(%s)", n.Child.String()) }
+
+// LookBehindNode is (?<=R). Zero-width; foundation for TDFA.
+type LookBehindNode struct{ Child Node }
+
+func (n *LookBehindNode) Nullable() bool            { return n.Child.Nullable() }
+func (n *LookBehindNode) Derivative(r rune) Node   { return &LookBehindNode{Child: n.Child.Derivative(r)} }
+func (n *LookBehindNode) Equals(other Node) bool {
+	o, ok := other.(*LookBehindNode)
+	return ok && n.Child.Equals(o.Child)
+}
+func (n *LookBehindNode) Reverse() Node  { return n }
+func (n *LookBehindNode) String() string { return fmt.Sprintf("LookBehind(%s)", n.Child.String()) }
