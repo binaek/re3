@@ -2,7 +2,10 @@ package re3
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"regexp"
+	"sync"
 	"testing"
 )
 
@@ -292,61 +295,386 @@ func TestMustCompile(t *testing.T) {
 	}
 }
 
-func TestClone(t *testing.T) {
-	re := MustCompile("a+")
-	clone := re.Clone()
-	if clone == re {
-		t.Error("Clone should return a new instance")
+// TestCompareWithStd runs (pattern, input) pairs that are valid in both re3 and Go's regexp,
+// and asserts that results match except where semantics intentionally differ (e.g. leftmost-longest).
+func TestCompareWithStd(t *testing.T) {
+	// fullMatchPairs: entire input matches the pattern; we assert MatchString is true for both.
+	fullMatchPairs := []struct {
+		pattern string
+		input   string
+	}{
+		{"a+b+", "aaabbb"},
+		{"a*", "aaa"},
+		{"hello", "hello"},
+		{"a|b", "b"},
+		{"[a-z]+", "abc"},
+		{".*", "xyz"},
 	}
-	if got := clone.MatchString("aaa"); !got {
-		t.Error("Clone should match same pattern")
+	for _, tc := range fullMatchPairs {
+		reRE3 := MustCompile(tc.pattern)
+		reStd := regexp.MustCompile(tc.pattern)
+		gotRE3 := reRE3.MatchString(tc.input)
+		gotStd := reStd.MatchString(tc.input)
+		if gotRE3 != gotStd {
+			t.Errorf("MatchString(%q, %q) re3=%v std=%v", tc.pattern, tc.input, gotRE3, gotStd)
+		}
+		if !gotRE3 || !gotStd {
+			t.Errorf("MatchString(%q, %q) expected both true (full match)", tc.pattern, tc.input)
+		}
+	}
+
+	// Pairs for FindString/FindAllString/ReplaceAllString. Exclude nullable patterns (a*, .*) from
+	// FindAllString/ReplaceAllString to avoid empty-match boundary differences.
+	pairs := []struct {
+		pattern string
+		input   string
+		nullable bool // if true, skip FindAllString and ReplaceAllString
+	}{
+		{"a+b+", "xxaaabbbxx", false},
+		{"[a-z]+", "abc123", false},
+		{"\\w+", "one two three", false},
+		{"[cjrw]", "abcdefghijklmnopqrstuvwxyz", false},
+		{"a|b", "b", false},
+		{"hello", "hello world", false},
+		{".*", "xyz", true},
+		{".*", "a\nb", true}, // dot does not match newline; verify both return "a" then "b"
+		{"a*", "aaa", true},
+		{"a*", "bbb", true},
+	}
+	for _, tc := range pairs {
+		reRE3 := MustCompile(tc.pattern)
+		reStd := regexp.MustCompile(tc.pattern)
+		// FindStringIndex / FindString
+		locRE3 := reRE3.FindStringIndex(tc.input)
+		locStd := reStd.FindStringIndex(tc.input)
+		var findRE3, findStd string
+		if locRE3 != nil {
+			findRE3 = tc.input[locRE3[0]:locRE3[1]]
+		}
+		if locStd != nil {
+			findStd = tc.input[locStd[0]:locStd[1]]
+		}
+		if findRE3 != findStd {
+			t.Errorf("FindString(%q, %q) re3=%q std=%q", tc.pattern, tc.input, findRE3, findStd)
+		}
+		if !tc.nullable {
+			// FindAllString
+			allRE3 := reRE3.FindAllString(tc.input, -1)
+			allStd := reStd.FindAllString(tc.input, -1)
+			if !reflect.DeepEqual(allRE3, allStd) {
+				t.Errorf("FindAllString(%q, %q) re3=%v std=%v", tc.pattern, tc.input, allRE3, allStd)
+			}
+			// ReplaceAllString
+			repl := "X"
+			rRE3 := reRE3.ReplaceAllString(tc.input, repl)
+			rStd := reStd.ReplaceAllString(tc.input, repl)
+			if rRE3 != rStd {
+				t.Errorf("ReplaceAllString(%q, %q, %q) re3=%q std=%q", tc.pattern, tc.input, repl, rRE3, rStd)
+			}
+		}
+	}
+
+	// Leftmost-longest vs leftmost-first: re3 uses POSIX leftmost-longest, Go regexp uses Perl leftmost-first.
+	// Pattern "a|ab" on input "ab": std returns "a" (first branch), re3 returns "ab" (longest match).
+	// This is intentional; document it here.
+	{
+		pattern, input := "a|ab", "ab"
+		reRE3 := MustCompile(pattern)
+		reStd := regexp.MustCompile(pattern)
+		findRE3 := reRE3.FindString(input)
+		findStd := reStd.FindString(input)
+		if findRE3 != "ab" {
+			t.Errorf("re3 (leftmost-longest) FindString(%q, %q) = %q, want \"ab\"", pattern, input, findRE3)
+		}
+		if findStd != "a" {
+			t.Errorf("std (leftmost-first) FindString(%q, %q) = %q, want \"a\"", pattern, input, findStd)
+		}
 	}
 }
 
+func TestClone(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+		match   bool
+		find    string // FindString result, or "" for no match
+	}{
+		{"match", "a+", "aaa", true, "aaa"},
+		{"no match", "a+", "bbb", false, ""},
+		{"find middle", "a+b+", "xxaaabbbxx", false, "aaabbb"}, // full string does not match a+b+
+		{"bounded", "a{2,}", "xaaaab", false, "aaaa"},         // full string does not match a{2,}
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			clone := re.Clone()
+			if clone == re {
+				t.Error("Clone should return a new instance")
+			}
+			if got := clone.MatchString(tc.text); got != tc.match {
+				t.Errorf("Clone.MatchString(%q) = %v, want %v", tc.text, got, tc.match)
+			}
+			gotFind := clone.FindString(tc.text)
+			if gotFind != tc.find {
+				t.Errorf("Clone.FindString(%q) = %q, want %q", tc.text, gotFind, tc.find)
+			}
+			// Original still works and matches clone results
+			if got := re.MatchString(tc.text); got != tc.match {
+				t.Errorf("Original.MatchString(%q) = %v, want %v", tc.text, got, tc.match)
+			}
+		})
+	}
+}
+
+func TestCloneParallel(t *testing.T) {
+	re := MustCompile("a+b+")
+	const numGoroutines = 8
+	matchInput := "aaabbb"        // full match
+	findInput := "xxaaabbbxx"     // FindStringIndex returns [2,8] -> "aaabbb"
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			clone := re.Clone()
+			for i := 0; i < 100; i++ {
+				if !clone.MatchString(matchInput) {
+					t.Error("Clone.MatchString should match")
+				}
+				loc := clone.FindStringIndex(findInput)
+				if loc == nil || findInput[loc[0]:loc[1]] != "aaabbb" {
+					t.Error("Clone.FindStringIndex want [2,8] for aaabbb")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestConcurrent(t *testing.T) {
-	cre := MustCompile("a+").Concurrent()
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+		match   bool
+		find    string
+	}{
+		{"match", "a+", "aaa", true, "aaa"},
+		{"no match", "a+", "bbb", false, ""},
+		{"find middle", "a+b+", "xxaaabbbxx", false, "aaabbb"}, // full string does not match
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cre := MustCompile(tc.pattern).Concurrent()
+			if cre == nil {
+				t.Fatal("Concurrent() returned nil")
+			}
+			if got := cre.MatchString(tc.text); got != tc.match {
+				t.Errorf("ConcurrentRegExp.MatchString(%q) = %v, want %v", tc.text, got, tc.match)
+			}
+			if got := cre.FindString(tc.text); got != tc.find {
+				t.Errorf("ConcurrentRegExp.FindString(%q) = %q, want %q", tc.text, got, tc.find)
+			}
+		})
+	}
+	// API parity: FindAllString, ReplaceAllString, Split
+	t.Run("FindAllString", func(t *testing.T) {
+		cre := MustCompile("\\w+").Concurrent()
+		got := cre.FindAllString("one two three", -1)
+		want := []string{"one", "two", "three"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ConcurrentRegExp.FindAllString = %v, want %v", got, want)
+		}
+	})
+	t.Run("ReplaceAllString", func(t *testing.T) {
+		cre := MustCompile("a+").Concurrent()
+		got := cre.ReplaceAllString("banana", "X")
+		if got != "bXnXnX" {
+			t.Errorf("ConcurrentRegExp.ReplaceAllString = %q, want bXnXnX", got)
+		}
+	})
+	t.Run("Split", func(t *testing.T) {
+		cre := MustCompile(":").Concurrent()
+		got := cre.Split("foo:and:bar", -1)
+		want := []string{"foo", "and", "bar"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ConcurrentRegExp.Split = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestConcurrentParallel(t *testing.T) {
+	cre := MustCompile("a+b+").Concurrent()
 	if cre == nil {
 		t.Fatal("Concurrent() returned nil")
 	}
-	if !cre.MatchString("aaa") {
-		t.Error("ConcurrentRegExp.MatchString should match")
+	const numGoroutines = 8
+	matchInput := "aaabbb"
+	findInput := "xxaaabbbxx"
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if !cre.MatchString(matchInput) {
+					t.Error("ConcurrentRegExp.MatchString should match")
+				}
+				loc := cre.FindStringIndex(findInput)
+				if loc == nil || findInput[loc[0]:loc[1]] != "aaabbb" {
+					t.Error("ConcurrentRegExp.FindStringIndex want [2,8] for aaabbb")
+				}
+			}
+		}()
 	}
-	if loc := cre.FindStringIndex("xaaab"); loc == nil || loc[0] != 1 || loc[1] != 4 {
-		t.Errorf("ConcurrentRegExp.FindStringIndex want [1,4], got %v", loc)
-	}
+	wg.Wait()
 }
 
 func TestBoundedRepetition(t *testing.T) {
 	tests := []struct {
+		name    string
 		pattern string
 		text    string
 		want    bool
 	}{
-		{"a{2}", "aa", true},
-		{"a{2}", "a", false},
-		{"a{2}", "aaa", false},
-		{"a{1,3}", "a", true},
-		{"a{1,3}", "aa", true},
-		{"a{1,3}", "aaa", true},
-		{"a{1,3}", "aaaa", false},
-		{"a{2,}", "aa", true},
-		{"a{2,}", "aaa", true},
-		{"a{2,}", "a", false},
-		{"[0-9]{2}", "12", true},
-		{"[0-9]{2}", "1", false},
+		{"exact n", "a{2}", "aa", true},
+		{"exact n too short", "a{2}", "a", false},
+		{"exact n too long", "a{2}", "aaa", false},
+		{"range min", "a{1,3}", "a", true},
+		{"range mid", "a{1,3}", "aa", true},
+		{"range max", "a{1,3}", "aaa", true},
+		{"range over", "a{1,3}", "aaaa", false},
+		{"open min", "a{2,}", "aa", true},
+		{"open more", "a{2,}", "aaa", true},
+		{"open too short", "a{2,}", "a", false},
+		{"char class exact", "[0-9]{2}", "12", true},
+		{"char class short", "[0-9]{2}", "1", false},
+		{"zero exact", "a{0}", "", true},
+		{"zero exact no match", "a{0}", "a", false},
+		{"zero open", "a{0,}", "", true},
+		{"zero open one", "a{0,}", "a", true},
+		{"one exact", "b{1}", "b", true},
+		{"one exact no match", "b{1}", "", false},
 	}
 	for _, tc := range tests {
-		re := MustCompile(tc.pattern)
-		got := re.MatchString(tc.text)
-		if got != tc.want {
-			t.Errorf("MatchString(%q, %q) = %v, want %v", tc.pattern, tc.text, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			got := re.MatchString(tc.text)
+			if got != tc.want {
+				t.Errorf("MatchString(%q, %q) = %v, want %v", tc.pattern, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundedRepetitionFind(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+		want    string // leftmost-longest match, or "" for no match
+	}{
+		{"exact in middle", "a{2}", "xaaab", "aa"},
+		{"range in middle", "a{2,4}", "xaaaab", "aaaa"},
+		{"range fewer", "a{2,4}", "xaaab", "aaa"},
+		{"open in middle", "a{2,}", "xaaabbb", "aaa"},
+		{"no match", "a{3}", "xaab", ""},
+		{"char class", "[0-9]{2,4}", "ab12345cd", "1234"},
+		{"zero repeat matches empty", "a{0}", "x", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			loc := re.FindStringIndex(tc.text)
+			var got string
+			if loc != nil {
+				got = tc.text[loc[0]:loc[1]]
+			}
+			if got != tc.want {
+				t.Errorf("FindString(%q, %q) = %q, want %q", tc.pattern, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundedRepetitionFindAll(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+		want    []string
+	}{
+		{"two runs", "a{2}", "aabaabaa", []string{"aa", "aa", "aa"}},
+		{"range runs", "a{1,2}", "abacaada", []string{"a", "a", "aa", "a"}},
+		{"digits", "[0-9]{2}", "a12b34c5", []string{"12", "34"}},
+		{"open", "a{2,}", "aaaabaab", []string{"aaaa", "aa"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			got := re.FindAllString(tc.text, -1)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("FindAllString(%q, %q) = %v, want %v", tc.pattern, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundedRepetitionReplace(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		repl    string
+		input   string
+		want    string
+	}{
+		{"exact", "a{2}", "X", "aabaab", "XbXb"},
+		{"range", "a{1,2}", "X", "abacaada", "XbXcXdX"},
+		{"open", "a{2,}", "Y", "aaaabaab", "YbYb"},
+		{"digits", "[0-9]{2}", "N", "a12b34c", "aNbNc"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			got := re.ReplaceAllString(tc.input, tc.repl)
+			if got != tc.want {
+				t.Errorf("ReplaceAllString(%q, %q, %q) = %q, want %q", tc.pattern, tc.repl, tc.input, got, tc.want)
+			}
+		})
 	}
 }
 
 func BenchmarkMatchString(b *testing.B) {
 	re := MustCompile("a+b+")
 	s := "aaabbb"
+	re.MatchString(s) // warm Lazy DFA
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.MatchString(s)
+	}
+}
+
+func BenchmarkMatchStringShort(b *testing.B) {
+	re := MustCompile("a+b+")
+	s := "aaabbb"
+	re.MatchString(s)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.MatchString(s)
+	}
+}
+
+func BenchmarkMatchStringLong(b *testing.B) {
+	re := MustCompile("a+b+")
+	s := ""
+	for i := 0; i < 2000; i++ {
+		s += "aaabbb"
+	}
+	re.MatchString(s)
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		re.MatchString(s)
