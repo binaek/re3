@@ -1,7 +1,5 @@
 package re3
 
-import "sync"
-
 const maxLazyDFAStates = 100_000
 
 // --- TYPES ---
@@ -28,10 +26,10 @@ func (m *MintermTable) RuneToClass(r rune) int {
 type lazyDFA struct {
 	root        Node
 	minterms    *MintermTable
-	stateASTs   []Node   // index = state ID; state 0 = root
-	transitions [][]int   // transitions[stateID][mintermID] = nextStateID; -1 = not computed
-	isMatch     []bool    // isMatch[stateID]
-	deadStateID int       // state that never accepts; used when state cap is exceeded
+	stateASTs   []Node  // index = state ID; state 0 = root
+	transitions [][]int // transitions[stateID][mintermID] = nextStateID; -1 = not computed
+	isMatch     []bool  // isMatch[stateID]
+	deadStateID int     // state that never accepts; used when state cap is exceeded
 }
 
 func newLazyDFA(root Node, minterms *MintermTable) *lazyDFA {
@@ -135,16 +133,10 @@ func (dfa *lazyDFA) isAccepting(stateID int) bool {
 }
 
 // --- THE COMPILER PIPELINE ---
-type RegExp struct {
-	minterms   *MintermTable
-	forward    *lazyDFA
-	unanchored *lazyDFA
-	reverse    *lazyDFA
-}
 
 type predicate [256]bool
 
-func Compile(expr string) (*RegExp, error) {
+func Compile(expr string) (RegExp, error) {
 	tokens := NewLexer(expr).LexAll()
 	for _, tok := range tokens {
 		if tok.Type == TokenError {
@@ -164,15 +156,16 @@ func Compile(expr string) (*RegExp, error) {
 
 	unanchoredAST := NewConcatNode(&StarNode{Child: &AnyNode{}}, ast)
 
-	return &RegExp{
-		minterms:   minterms,
-		forward:    newLazyDFA(ast, minterms),
-		unanchored: newLazyDFA(unanchoredAST, minterms),
-		reverse:    newLazyDFA(revAST, minterms),
+	return &regexpImpl{
+		minterms:     minterms,
+		forward:      newLazyDFA(ast, minterms),
+		unanchored:   newLazyDFA(unanchoredAST, minterms),
+		reverse:      newLazyDFA(revAST, minterms),
+		CaptureCount: countCaptureGroups(ast),
 	}, nil
 }
 
-func MustCompile(expr string) *RegExp {
+func MustCompile(expr string) RegExp {
 	re, err := Compile(expr)
 	if err != nil {
 		panic(err)
@@ -180,65 +173,17 @@ func MustCompile(expr string) *RegExp {
 	return re
 }
 
-// Clone returns a new RegExp that shares minterms and root ASTs but has fresh
-// lazy DFA caches. Safe to use the original and clone in different goroutines.
-func (re *RegExp) Clone() *RegExp {
-	return &RegExp{
-		minterms:   re.minterms,
-		forward:    newLazyDFA(re.forward.root, re.minterms),
-		unanchored: newLazyDFA(re.unanchored.root, re.minterms),
-		reverse:    newLazyDFA(re.reverse.root, re.minterms),
+// Concurrent returns a thread-safe RegExp implementation. If re is already
+// a ConcurrentRegExp it is returned unchanged; otherwise re must be from
+// Compile/MustCompile and is wrapped in a new ConcurrentRegExp.
+func Concurrent(re RegExp) RegExp {
+	if c, ok := re.(*concurrentRegExpImpl); ok {
+		return c
 	}
-}
-
-// ConcurrentRegExp is a thread-safe wrapper around RegExp.
-type ConcurrentRegExp struct {
-	mu sync.RWMutex
-	re *RegExp
-}
-
-// Concurrent wraps the lock-free RegExp in a thread-safe wrapper.
-func (re *RegExp) Concurrent() *ConcurrentRegExp {
-	return &ConcurrentRegExp{re: re}
-}
-
-// compileDFA is kept for reference / tests that need eager DFA; not used by Compile.
-func compileDFA(root Node, minterms *MintermTable) ([][]int, []bool) {
-	var transitions [][]int
-	var isMatch []bool
-	stateASTs := []Node{root}
-	queue := []int{0}
-
-	for len(queue) > 0 {
-		currentStateID := queue[0]
-		queue = queue[1:]
-		currentAST := stateASTs[currentStateID]
-
-		isMatch = append(isMatch, currentAST.Nullable())
-		stateTransitions := make([]int, minterms.NumClasses)
-
-		for mintermID := 0; mintermID < minterms.NumClasses; mintermID++ {
-			char := rune(minterms.ClassToByte[mintermID])
-			nextAST := currentAST.Derivative(char)
-
-			nextStateID := -1
-			for id, seenAST := range stateASTs {
-				if seenAST.Equals(nextAST) {
-					nextStateID = id
-					break
-				}
-			}
-
-			if nextStateID == -1 {
-				nextStateID = len(stateASTs)
-				stateASTs = append(stateASTs, nextAST)
-				queue = append(queue, nextStateID)
-			}
-			stateTransitions[mintermID] = nextStateID
-		}
-		transitions = append(transitions, stateTransitions)
+	if impl, ok := re.(*regexpImpl); ok {
+		return &concurrentRegExpImpl{re: impl}
 	}
-	return transitions, isMatch
+	return re
 }
 
 // --- MINTERM COMPRESSION LOGIC ---
@@ -323,6 +268,8 @@ func extractPredicates(node Node) []predicate {
 		preds = append(preds, extractPredicates(n.Child)...)
 	case *LookBehindNode:
 		preds = append(preds, extractPredicates(n.Child)...)
+	case *TagNode:
+		// No character predicates; tag is zero-width.
 	case *AnyNode:
 		// Dot does not match newline; ensure \n gets its own minterm class so Derivative('\n') is used.
 		var p predicate

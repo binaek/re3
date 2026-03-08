@@ -309,3 +309,26 @@ func (n *LookBehindNode) Equals(other Node) bool {
 }
 func (n *LookBehindNode) Reverse() Node  { return n }
 func (n *LookBehindNode) String() string { return fmt.Sprintf("LookBehind(%s)", n.Child.String()) }
+
+// --- TDFA: capture boundaries (zero-width) ---
+
+// TagNode marks a capture boundary for the TDFA. Zero-width; does not consume input.
+// Id is the capture group number (1-based). IsStart true = open (set start index), false = close (set end index).
+type TagNode struct {
+	Id      int
+	IsStart bool
+}
+
+func (n *TagNode) Nullable() bool            { return true }
+func (n *TagNode) Derivative(rune) Node      { return &EmptyNode{} }
+func (n *TagNode) Equals(other Node) bool {
+	o, ok := other.(*TagNode)
+	return ok && n.Id == o.Id && n.IsStart == o.IsStart
+}
+func (n *TagNode) Reverse() Node { return &TagNode{Id: n.Id, IsStart: !n.IsStart} }
+func (n *TagNode) String() string {
+	if n.IsStart {
+		return fmt.Sprintf("Tag(%d,start)", n.Id)
+	}
+	return fmt.Sprintf("Tag(%d,end)", n.Id)
+}
