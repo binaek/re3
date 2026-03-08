@@ -20,7 +20,7 @@ func (c *concurrentRegExpImpl) MatchString(s string) bool {
 	cacheMiss := false
 	for pos := 0; pos < len(s); {
 		r, size := utf8.DecodeRuneInString(s[pos:])
-		mintermID := c.re.minterms.RuneToClass(r)
+		mintermID := c.re.minterms.runeToClass(r)
 		next, ok := c.re.forward.getNextStateCached(state, mintermID)
 		if !ok {
 			cacheMiss = true
@@ -47,7 +47,7 @@ func (c *concurrentRegExpImpl) Match(b []byte) bool {
 	cacheMiss := false
 	for pos := 0; pos < len(b); {
 		r, size := utf8.DecodeRune(b[pos:])
-		mintermID := c.re.minterms.RuneToClass(r)
+		mintermID := c.re.minterms.runeToClass(r)
 		next, ok := c.re.forward.getNextStateCached(state, mintermID)
 		if !ok {
 			cacheMiss = true
@@ -107,7 +107,7 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		next, ok := re.unanchored.getNextStateCached(state, mintermID)
 		if !ok {
 			return nil, true
@@ -128,7 +128,7 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	for bytePos > 0 {
 		r, size := utf8.DecodeLastRuneInString(s[:bytePos])
 		bytePos -= size
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		next, ok := re.reverse.getNextStateCached(revState, mintermID)
 		if !ok {
 			return nil, true
@@ -152,7 +152,7 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	bytePos = leftmostStart
 	for bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		next, ok := re.forward.getNextStateCached(fwdState, mintermID)
 		if !ok {
 			return nil, true

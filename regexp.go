@@ -7,12 +7,12 @@ import (
 
 // regexpImpl is the default lock-free implementation of RegExp.
 type regexpImpl struct {
-	minterms     *MintermTable
+	minterms     *mintermTable
 	forward      *lazyDFA
 	unanchored   *lazyDFA
 	reverse      *lazyDFA
-	prefix       string   // optional literal prefix for Find fast-forward; empty means none
-	CaptureCount int      // number of capture groups (GroupNodes)
+	prefix       string    // optional literal prefix for Find fast-forward; empty means none
+	CaptureCount int       // number of capture groups (GroupNodes)
 	forwardTDFA  *lazyTDFA // built lazily when a submatch API is used
 }
 
@@ -36,7 +36,7 @@ func (re *regexpImpl) MatchString(s string) bool {
 	state := 0
 	for pos := 0; pos < len(s); {
 		r, size := utf8.DecodeRuneInString(s[pos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		state = re.forward.getNextState(state, mintermID)
 		pos += size
 	}
@@ -48,7 +48,7 @@ func (re *regexpImpl) Match(b []byte) bool {
 	state := 0
 	for pos := 0; pos < len(b); {
 		r, size := utf8.DecodeRune(b[pos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		state = re.forward.getNextState(state, mintermID)
 		pos += size
 	}
@@ -80,7 +80,7 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		state = re.unanchored.getNextState(state, mintermID)
 
 		if re.unanchored.isAccepting(state) {
@@ -100,7 +100,7 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 	for bytePos > 0 {
 		r, size := utf8.DecodeLastRuneInString(s[:bytePos])
 		bytePos -= size
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		revState = re.reverse.getNextState(revState, mintermID)
 		if revState == re.reverse.deadStateID {
 			break
@@ -123,7 +123,7 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 	bytePos = leftmostStart
 	for bytePos < len(s) {
 		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.RuneToClass(r)
+		mintermID := re.minterms.runeToClass(r)
 		fwdState = re.forward.getNextState(fwdState, mintermID)
 
 		if re.forward.isAccepting(fwdState) {
@@ -330,7 +330,7 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 		return []string{match}
 	}
 	if re.forwardTDFA == nil {
-		re.forwardTDFA = newLazyTDFA(InjectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+		re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
 	}
 	span := s[loc[0]:loc[1]]
 	capture := re.forwardTDFA.runTDFA(span)
@@ -366,7 +366,7 @@ func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
 			out = append(out, []string{span})
 		} else {
 			if re.forwardTDFA == nil {
-				re.forwardTDFA = newLazyTDFA(InjectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+				re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
 			}
 			capture := re.forwardTDFA.runTDFA(span)
 			if capture == nil {

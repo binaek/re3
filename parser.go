@@ -14,57 +14,57 @@ const (
 	POSTFIX
 )
 
-type Parser struct {
-	tokens         []Token
+type parser struct {
+	tokens         []token
 	pos            int
-	curToken       Token
-	peekToken      Token
+	curToken       token
+	peekToken      token
 	groupCount     int
-	expr           string // source expression for error reporting
-	prefixParseFns map[TokenType]func() (Node, error)
-	infixParseFns  map[TokenType]func(Node) (Node, error)
+	expr           string
+	prefixParseFns map[tokenType]func() (node, error)
+	infixParseFns  map[tokenType]func(node) (node, error)
 }
 
-func NewParser(tokens []Token, expr string) *Parser {
-	p := &Parser{tokens: tokens, pos: -1, expr: expr}
-	p.prefixParseFns = map[TokenType]func() (Node, error){
-		TokenLiteral:    p.parseLiteral,
-		TokenEscape:     p.parseEscape,
-		TokenCharClass:  p.parseCharClass,
-		TokenComplement: p.parseComplement,
-		TokenLParen:     p.parseGroup,
-		TokenDot:        p.parseDot,
-		TokenLookAhead:  p.parseLookAhead,
-		TokenLookBehind: p.parseLookBehind,
+func newParser(tokens []token, expr string) *parser {
+	p := &parser{tokens: tokens, pos: -1, expr: expr}
+	p.prefixParseFns = map[tokenType]func() (node, error){
+		tokenLiteral:    p.parseLiteral,
+		tokenEscape:     p.parseEscape,
+		tokenCharClass:  p.parseCharClass,
+		tokenComplement: p.parseComplement,
+		tokenLParen:     p.parseGroup,
+		tokenDot:        p.parseDot,
+		tokenLookAhead:  p.parseLookAhead,
+		tokenLookBehind: p.parseLookBehind,
 	}
-	p.infixParseFns = map[TokenType]func(Node) (Node, error){
-		TokenUnion:     p.parseUnion,
-		TokenIntersect: p.parseIntersect,
-		TokenStar:      p.parseStar,
-		TokenPlus:      p.parsePlus,
-		TokenQuestion:  p.parseQuestion,
-		TokenLBrace:    p.parseBoundedRepeat,
+	p.infixParseFns = map[tokenType]func(node) (node, error){
+		tokenUnion:     p.parseUnion,
+		tokenIntersect: p.parseIntersect,
+		tokenStar:      p.parseStar,
+		tokenPlus:      p.parsePlus,
+		tokenQuestion:  p.parseQuestion,
+		tokenLBrace:    p.parseBoundedRepeat,
 	}
 	p.nextToken()
 	p.nextToken()
 	return p
 }
 
-func (p *Parser) nextToken() {
+func (p *parser) nextToken() {
 	p.curToken = p.peekToken
 	p.pos++
 	if p.pos < len(p.tokens) {
 		p.peekToken = p.tokens[p.pos]
 	} else {
-		p.peekToken = Token{Type: TokenEOF}
+		p.peekToken = token{Type: tokenEOF}
 	}
 }
 
-func (p *Parser) Parse() (Node, error) {
+func (p *parser) parse() (node, error) {
 	return p.parseExpression(LOWEST)
 }
 
-func (p *Parser) parseExpression(precedence int) (Node, error) {
+func (p *parser) parseExpression(precedence int) (node, error) {
 	prefix := p.prefixParseFns[p.curToken.Type]
 	if prefix == nil {
 		return nil, &Error{Code: ErrInternalError, Expr: p.expr}
@@ -74,7 +74,7 @@ func (p *Parser) parseExpression(precedence int) (Node, error) {
 		return nil, err
 	}
 
-	for p.peekToken.Type != TokenEOF && precedence < p.peekPrecedence() {
+	for p.peekToken.Type != tokenEOF && precedence < p.peekPrecedence() {
 		infix := p.infixParseFns[p.peekToken.Type]
 		if infix == nil {
 			if p.isPeekStartOfExpression() {
@@ -96,33 +96,30 @@ func (p *Parser) parseExpression(precedence int) (Node, error) {
 }
 
 // --- PARSING HANDLERS ---
-func (p *Parser) parseLiteral() (Node, error) {
-	return &LiteralNode{Value: p.curToken.Value}, nil
+func (p *parser) parseLiteral() (node, error) {
+	return &literalNode{Value: p.curToken.Value}, nil
 }
 
-func (p *Parser) parseEscape() (Node, error) {
+func (p *parser) parseEscape() (node, error) {
 	val := p.curToken.Value
 
-	// If it is a known shorthand class, treat it exactly like a bracketed CharClassNode!
 	if val == 'd' || val == 'w' || val == 's' {
-		return &CharClassNode{Class: "\\" + string(val)}, nil
+		return &charClassNode{Class: "\\" + string(val)}, nil
 	}
-
-	// Otherwise, it is a standard escaped literal (like \*, \+, \.)
-	return &LiteralNode{Value: val}, nil
+	return &literalNode{Value: val}, nil
 }
-func (p *Parser) parseCharClass() (Node, error) {
-	return &CharClassNode{Class: p.curToken.Text}, nil
+func (p *parser) parseCharClass() (node, error) {
+	return &charClassNode{Class: p.curToken.Text}, nil
 }
-func (p *Parser) parseComplement() (Node, error) {
+func (p *parser) parseComplement() (node, error) {
 	p.nextToken()
 	child, err := p.parseExpression(PREFIX)
 	if err != nil {
 		return nil, err
 	}
-	return NewComplementNode(child), nil
+	return newComplementNode(child), nil
 }
-func (p *Parser) parseGroup() (Node, error) {
+func (p *parser) parseGroup() (node, error) {
 	p.nextToken()
 	p.groupCount++
 	id := p.groupCount
@@ -130,35 +127,35 @@ func (p *Parser) parseGroup() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.peekToken.Type != TokenRParen {
+	if p.peekToken.Type != tokenRParen {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &GroupNode{GroupID: id, Child: exp}, nil
+	return &groupNode{GroupID: id, Child: exp}, nil
 }
-func (p *Parser) parseUnion(left Node) (Node, error) {
+func (p *parser) parseUnion(left node) (node, error) {
 	p.nextToken()
 	right, err := p.parseExpression(UNION)
 	if err != nil {
 		return nil, err
 	}
-	return NewUnionNode(left, right), nil
+	return newUnionNode(left, right), nil
 }
-func (p *Parser) parseIntersect(left Node) (Node, error) {
+func (p *parser) parseIntersect(left node) (node, error) {
 	p.nextToken()
 	right, err := p.parseExpression(INTERSECT)
 	if err != nil {
 		return nil, err
 	}
-	return NewIntersectNode(left, right), nil
+	return newIntersectNode(left, right), nil
 }
-func (p *Parser) parseStar(left Node) (Node, error)     { return &StarNode{Child: left}, nil }
-func (p *Parser) parsePlus(left Node) (Node, error)     { return NewConcatNode(left, &StarNode{Child: left}), nil }
-func (p *Parser) parseQuestion(left Node) (Node, error) { return NewUnionNode(left, &EmptyNode{}), nil }
+func (p *parser) parseStar(left node) (node, error)     { return &starNode{Child: left}, nil }
+func (p *parser) parsePlus(left node) (node, error)     { return newConcatNode(left, &starNode{Child: left}), nil }
+func (p *parser) parseQuestion(left node) (node, error) { return newUnionNode(left, &emptyNode{}), nil }
 
-func (p *Parser) parseBoundedRepeat(left Node) (Node, error) {
-	p.nextToken() // consume LBrace
-	if p.curToken.Type != TokenNumber {
+func (p *parser) parseBoundedRepeat(left node) (node, error) {
+	p.nextToken()
+	if p.curToken.Type != tokenNumber {
 		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
 	}
 	n, err := strconv.Atoi(p.curToken.Text)
@@ -168,15 +165,14 @@ func (p *Parser) parseBoundedRepeat(left Node) (Node, error) {
 	hasComma := false
 	var m int
 	p.nextToken()
-	if p.curToken.Type == TokenComma {
+	if p.curToken.Type == tokenComma {
 		hasComma = true
 		p.nextToken()
-		if p.curToken.Type == TokenRBrace {
-			// {n,} = at least n
-			p.nextToken() // consume RBrace
+		if p.curToken.Type == tokenRBrace {
+			p.nextToken()
 			return desugarRepeatMinLeft(left, n), nil
 		}
-		if p.curToken.Type != TokenNumber {
+		if p.curToken.Type != tokenNumber {
 			return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
 		}
 		m, err = strconv.Atoi(p.curToken.Text)
@@ -185,106 +181,103 @@ func (p *Parser) parseBoundedRepeat(left Node) (Node, error) {
 		}
 		p.nextToken()
 	}
-	if p.curToken.Type != TokenRBrace {
+	if p.curToken.Type != tokenRBrace {
 		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
 	}
 	p.nextToken()
 	if !hasComma {
-		// {n} = exactly n
 		return desugarRepeatExact(left, n), nil
 	}
-	// {n,m}
 	return desugarRepeatMinMax(left, n, m, p.expr)
 }
 
-func desugarRepeatExact(child Node, n int) Node {
+func desugarRepeatExact(child node, n int) node {
 	if n == 0 {
-		return &EmptyNode{}
+		return &emptyNode{}
 	}
 	out := child
 	for i := 1; i < n; i++ {
-		out = NewConcatNode(out, child)
+		out = newConcatNode(out, child)
 	}
 	return out
 }
 
-func desugarRepeatMinLeft(child Node, n int) Node {
+func desugarRepeatMinLeft(child node, n int) node {
 	if n == 0 {
-		return &StarNode{Child: child}
+		return &starNode{Child: child}
 	}
 	out := desugarRepeatExact(child, n)
-	return NewConcatNode(out, &StarNode{Child: child})
+	return newConcatNode(out, &starNode{Child: child})
 }
 
-func desugarRepeatMinMax(child Node, n, m int, expr string) (Node, error) {
+func desugarRepeatMinMax(child node, n, m int, expr string) (node, error) {
 	if n > m {
 		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: expr}
 	}
 	if n == 0 && m == 0 {
-		return &EmptyNode{}, nil
+		return &emptyNode{}, nil
 	}
-	// n to m: n required, then (m-n) optional. a{1,3} = a (a?)(a?)
 	out := desugarRepeatExact(child, n)
 	for i := 0; i < m-n; i++ {
-		out = NewConcatNode(out, NewUnionNode(child, &EmptyNode{}))
+		out = newConcatNode(out, newUnionNode(child, &emptyNode{}))
 	}
 	return out, nil
 }
 
-func (p *Parser) isPeekStartOfExpression() bool {
+func (p *parser) isPeekStartOfExpression() bool {
 	t := p.peekToken.Type
-	return t == TokenLiteral || t == TokenLParen || t == TokenComplement ||
-		t == TokenCharClass || t == TokenEscape || t == TokenDot ||
-		t == TokenLookAhead || t == TokenLookBehind
+	return t == tokenLiteral || t == tokenLParen || t == tokenComplement ||
+		t == tokenCharClass || t == tokenEscape || t == tokenDot ||
+		t == tokenLookAhead || t == tokenLookBehind
 }
-func (p *Parser) parseImplicitConcat(left Node) (Node, error) {
+func (p *parser) parseImplicitConcat(left node) (node, error) {
 	p.nextToken()
 	right, err := p.parseExpression(CONCAT)
 	if err != nil {
 		return nil, err
 	}
-	return NewConcatNode(left, right), nil
+	return newConcatNode(left, right), nil
 }
-func (p *Parser) parseDot() (Node, error) {
-	return &AnyNode{}, nil
+func (p *parser) parseDot() (node, error) {
+	return &anyNode{}, nil
 }
 
-func (p *Parser) parseLookAhead() (Node, error) {
-	p.nextToken() // consume (?=
+func (p *parser) parseLookAhead() (node, error) {
+	p.nextToken()
 	child, err := p.parseExpression(LOWEST)
 	if err != nil {
 		return nil, err
 	}
-	if p.peekToken.Type != TokenRParen {
+	if p.peekToken.Type != tokenRParen {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &LookAheadNode{Child: child}, nil
+	return &lookAheadNode{Child: child}, nil
 }
 
-func (p *Parser) parseLookBehind() (Node, error) {
-	p.nextToken() // consume (?<=
+func (p *parser) parseLookBehind() (node, error) {
+	p.nextToken()
 	child, err := p.parseExpression(LOWEST)
 	if err != nil {
 		return nil, err
 	}
-	if p.peekToken.Type != TokenRParen {
+	if p.peekToken.Type != tokenRParen {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &LookBehindNode{Child: child}, nil
+	return &lookBehindNode{Child: child}, nil
 }
-func (p *Parser) peekPrecedence() int {
+func (p *parser) peekPrecedence() int {
 	if p.isPeekStartOfExpression() {
 		return CONCAT
 	}
-	precedences := map[TokenType]int{
-		TokenUnion:     UNION,
-		TokenIntersect: INTERSECT,
-		TokenStar:      POSTFIX,
-		TokenPlus:      POSTFIX,
-		TokenQuestion:  POSTFIX,
-		TokenLBrace:    POSTFIX,
+	precedences := map[tokenType]int{
+		tokenUnion:     UNION,
+		tokenIntersect: INTERSECT,
+		tokenStar:      POSTFIX,
+		tokenPlus:      POSTFIX,
+		tokenQuestion:  POSTFIX,
+		tokenLBrace:    POSTFIX,
 	}
 	if prec, ok := precedences[p.peekToken.Type]; ok {
 		return prec

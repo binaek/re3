@@ -4,17 +4,15 @@ const maxLazyDFAStates = 100_000
 
 // --- TYPES ---
 
-type MintermTable struct {
+type mintermTable struct {
 	ByteToClass   [256]int
 	ClassToByte   []byte
-	ClassToRune   []rune // representative rune per class for derivative (rune-based)
+	ClassToRune   []rune
 	NumClasses    int
-	highRuneClass int // class ID for runes >= 256
+	highRuneClass int
 }
 
-// RuneToClass returns the minterm class ID for rune r.
-// For r < 256 uses the byte partition; for r >= 256 returns the single "high" class.
-func (m *MintermTable) RuneToClass(r rune) int {
+func (m *mintermTable) runeToClass(r rune) int {
 	if r < 256 {
 		return m.ByteToClass[byte(r)]
 	}
@@ -24,20 +22,20 @@ func (m *MintermTable) RuneToClass(r rune) int {
 // lazyDFA holds the root AST and lazily computed state cache.
 // It is not safe for concurrent use.
 type lazyDFA struct {
-	root        Node
-	minterms    *MintermTable
-	stateASTs   []Node  // index = state ID; state 0 = root
-	transitions [][]int // transitions[stateID][mintermID] = nextStateID; -1 = not computed
-	isMatch     []bool  // isMatch[stateID]
-	deadStateID int     // state that never accepts; used when state cap is exceeded
+	root        node
+	minterms    *mintermTable
+	stateASTs   []node
+	transitions [][]int
+	isMatch     []bool
+	deadStateID int
 }
 
-func newLazyDFA(root Node, minterms *MintermTable) *lazyDFA {
-	dead := &FalseNode{}
+func newLazyDFA(root node, minterms *mintermTable) *lazyDFA {
+	dead := &falseNode{}
 	dfa := &lazyDFA{
 		root:        root,
 		minterms:    minterms,
-		stateASTs:   []Node{root, dead},
+		stateASTs:   []node{root, dead},
 		transitions: make([][]int, 2),
 		isMatch:     []bool{root.Nullable(), false},
 		deadStateID: 1,
@@ -136,10 +134,10 @@ func (dfa *lazyDFA) isAccepting(stateID int) bool {
 
 type predicate [256]bool
 
-func Compile(expr string) (RegExp, error) {
-	tokens := NewLexer(expr).LexAll()
+func compile(expr string) (RegExp, error) {
+	tokens := newLexer(expr).lexAll()
 	for _, tok := range tokens {
-		if tok.Type == TokenError {
+		if tok.Type == tokenError {
 			code := ErrTrailingBackslash
 			if tok.Text == "unclosed character class" {
 				code = ErrMissingBracket
@@ -147,14 +145,14 @@ func Compile(expr string) (RegExp, error) {
 			return nil, &Error{Code: code, Expr: expr}
 		}
 	}
-	ast, err := NewParser(tokens, expr).Parse()
+	ast, err := newParser(tokens, expr).parse()
 	if err != nil {
 		return nil, err
 	}
 	revAST := ast.Reverse()
 	minterms := buildMintermTable(ast)
 
-	unanchoredAST := NewConcatNode(&StarNode{Child: &AnyNode{}}, ast)
+	unanchoredAST := newConcatNode(&starNode{Child: &anyNode{}}, ast)
 
 	return &regexpImpl{
 		minterms:     minterms,
@@ -166,40 +164,19 @@ func Compile(expr string) (RegExp, error) {
 	}, nil
 }
 
-func MustCompile(expr string) RegExp {
-	re, err := Compile(expr)
-	if err != nil {
-		panic(err)
-	}
-	return re
-}
-
-// Concurrent returns a thread-safe RegExp implementation. If re is already
-// a ConcurrentRegExp it is returned unchanged; otherwise re must be from
-// Compile/MustCompile and is wrapped in a new ConcurrentRegExp.
-func Concurrent(re RegExp) RegExp {
-	if c, ok := re.(*concurrentRegExpImpl); ok {
-		return c
-	}
-	if impl, ok := re.(*regexpImpl); ok {
-		return &concurrentRegExpImpl{re: impl}
-	}
-	return re
-}
-
 // extractLiteralPrefix returns the longest literal prefix of the pattern (required at start).
 // Used to fast-forward FindStringIndex via strings.Index; empty means no literal prefix.
-func extractLiteralPrefix(n Node) string {
+func extractLiteralPrefix(n node) string {
 	switch node := n.(type) {
-	case *LiteralNode:
+	case *literalNode:
 		return string(node.Value)
-	case *ConcatNode:
+	case *concatNode:
 		return extractLiteralPrefix(node.Left) + extractLiteralPrefix(node.Right)
-	case *GroupNode:
+	case *groupNode:
 		return extractLiteralPrefix(node.Child)
-	case *StarNode, *UnionNode, *AnyNode, *FalseNode, *EmptyNode,
-		*CharClassNode, *LookAheadNode, *LookBehindNode, *TagNode,
-		*ComplementNode, *IntersectNode:
+	case *starNode, *unionNode, *anyNode, *falseNode, *emptyNode,
+		*charClassNode, *lookAheadNode, *lookBehindNode, *tagNode,
+		*complementNode, *intersectNode:
 		return ""
 	default:
 		return ""
@@ -208,7 +185,7 @@ func extractLiteralPrefix(n Node) string {
 
 // --- MINTERM COMPRESSION LOGIC ---
 
-func buildMintermTable(ast Node) *MintermTable {
+func buildMintermTable(ast node) *mintermTable {
 	preds := extractPredicates(ast)
 
 	var initialClass []byte
@@ -239,7 +216,7 @@ func buildMintermTable(ast Node) *MintermTable {
 		classes = nextClasses
 	}
 
-	table := &MintermTable{
+	table := &mintermTable{
 		NumClasses:    len(classes) + 1,
 		ClassToByte:   make([]byte, len(classes)+1),
 		ClassToRune:   make([]rune, len(classes)+1),
@@ -257,40 +234,39 @@ func buildMintermTable(ast Node) *MintermTable {
 	return table
 }
 
-func extractPredicates(node Node) []predicate {
+func extractPredicates(n node) []predicate {
 	var preds []predicate
 
-	switch n := node.(type) {
-	case *LiteralNode:
+	switch node := n.(type) {
+	case *literalNode:
 		var p predicate
-		if n.Value < 256 {
-			p[n.Value] = true
+		if node.Value < 256 {
+			p[node.Value] = true
 		}
 		preds = append(preds, p)
-	case *CharClassNode:
-		preds = append(preds, parseCharClass(n.Class))
-	case *ConcatNode:
-		preds = append(preds, extractPredicates(n.Left)...)
-		preds = append(preds, extractPredicates(n.Right)...)
-	case *UnionNode:
-		preds = append(preds, extractPredicates(n.Left)...)
-		preds = append(preds, extractPredicates(n.Right)...)
-	case *IntersectNode:
-		preds = append(preds, extractPredicates(n.Left)...)
-		preds = append(preds, extractPredicates(n.Right)...)
-	case *ComplementNode:
-		preds = append(preds, extractPredicates(n.Child)...)
-	case *StarNode:
-		preds = append(preds, extractPredicates(n.Child)...)
-	case *GroupNode:
-		preds = append(preds, extractPredicates(n.Child)...)
-	case *LookAheadNode:
-		preds = append(preds, extractPredicates(n.Child)...)
-	case *LookBehindNode:
-		preds = append(preds, extractPredicates(n.Child)...)
-	case *TagNode:
-		// No character predicates; tag is zero-width.
-	case *AnyNode:
+	case *charClassNode:
+		preds = append(preds, parseCharClass(node.Class))
+	case *concatNode:
+		preds = append(preds, extractPredicates(node.Left)...)
+		preds = append(preds, extractPredicates(node.Right)...)
+	case *unionNode:
+		preds = append(preds, extractPredicates(node.Left)...)
+		preds = append(preds, extractPredicates(node.Right)...)
+	case *intersectNode:
+		preds = append(preds, extractPredicates(node.Left)...)
+		preds = append(preds, extractPredicates(node.Right)...)
+	case *complementNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *starNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *groupNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *lookAheadNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *lookBehindNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *tagNode:
+	case *anyNode:
 		// Dot does not match newline; ensure \n gets its own minterm class so Derivative('\n') is used.
 		var p predicate
 		for i := 0; i < 256; i++ {

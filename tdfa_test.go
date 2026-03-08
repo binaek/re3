@@ -7,26 +7,26 @@ import (
 
 func TestInjectCaptureTags(t *testing.T) {
 	// GroupNode(1, a) -> Concat(Tag(1,start), Concat(a, Tag(1,end)))
-	a := &LiteralNode{Value: 'a'}
-	group := &GroupNode{GroupID: 1, Child: a}
-	tagged := InjectCaptureTags(group)
+	a := &literalNode{Value: 'a'}
+	group := &groupNode{GroupID: 1, Child: a}
+	tagged := injectCaptureTags(group)
 
-	concat, ok := tagged.(*ConcatNode)
+	concat, ok := tagged.(*concatNode)
 	if !ok {
-		t.Fatalf("InjectCaptureTags(Group(1,a)) should return ConcatNode, got %T", tagged)
+		t.Fatalf("injectCaptureTags(Group(1,a)) should return concatNode, got %T", tagged)
 	}
-	tagStart, ok := concat.Left.(*TagNode)
+	tagStart, ok := concat.Left.(*tagNode)
 	if !ok || tagStart.Id != 1 || !tagStart.IsStart {
 		t.Errorf("left of Concat should be Tag(1,start), got %v", concat.Left)
 	}
-	inner, ok := concat.Right.(*ConcatNode)
+	inner, ok := concat.Right.(*concatNode)
 	if !ok {
 		t.Fatalf("right of Concat should be Concat(a, Tag), got %T", concat.Right)
 	}
 	if !inner.Left.Equals(a) {
 		t.Errorf("inner Concat left should be Lit('a'), got %v", inner.Left)
 	}
-	tagEnd, ok := inner.Right.(*TagNode)
+	tagEnd, ok := inner.Right.(*tagNode)
 	if !ok || tagEnd.Id != 1 || tagEnd.IsStart {
 		t.Errorf("inner Concat right should be Tag(1,end), got %v", inner.Right)
 	}
@@ -34,13 +34,13 @@ func TestInjectCaptureTags(t *testing.T) {
 
 func TestStepTDFA_Basic(t *testing.T) {
 	// stepTDFA(Lit('a'), 'a') -> one config: NextNode=Empty, Tags=nil
-	lit := &LiteralNode{Value: 'a'}
+	lit := &literalNode{Value: 'a'}
 	configs := stepTDFA(lit, 'a')
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'a') want 1 config, got %d", len(configs))
 	}
-	if _, ok := configs[0].NextNode.(*EmptyNode); !ok {
-		t.Errorf("NextNode want EmptyNode, got %T", configs[0].NextNode)
+	if _, ok := configs[0].NextNode.(*emptyNode); !ok {
+		t.Errorf("NextNode want emptyNode, got %T", configs[0].NextNode)
 	}
 	if configs[0].Tags != nil {
 		t.Errorf("Tags want nil, got %v", configs[0].Tags)
@@ -51,8 +51,8 @@ func TestStepTDFA_Basic(t *testing.T) {
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'b') want 1 config, got %d", len(configs))
 	}
-	if _, ok := configs[0].NextNode.(*FalseNode); !ok {
-		t.Errorf("NextNode want FalseNode, got %T", configs[0].NextNode)
+	if _, ok := configs[0].NextNode.(*falseNode); !ok {
+		t.Errorf("NextNode want falseNode, got %T", configs[0].NextNode)
 	}
 }
 
@@ -61,15 +61,15 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 	// left branch yields (Empty, [Tag1]) among others, right yields (Empty, [Tag2]).
 	// Configs order: left configs first, then right. So first Empty config has Tag1.
 	// TDFA compiler takes configs[0] when multiple configs have same NextNode -> leftmost wins.
-	tag1a := &ConcatNode{
-		Left:  &TagNode{Id: 1, IsStart: true},
-		Right: &LiteralNode{Value: 'a'},
+	tag1a := &concatNode{
+		Left:  &tagNode{Id: 1, IsStart: true},
+		Right: &literalNode{Value: 'a'},
 	}
-	tag2a := &ConcatNode{
-		Left:  &TagNode{Id: 2, IsStart: true},
-		Right: &LiteralNode{Value: 'a'},
+	tag2a := &concatNode{
+		Left:  &tagNode{Id: 2, IsStart: true},
+		Right: &literalNode{Value: 'a'},
 	}
-	u := &UnionNode{Left: tag1a, Right: tag2a}
+	u := &unionNode{Left: tag1a, Right: tag2a}
 	configs := stepTDFA(u, 'a')
 	if len(configs) < 2 {
 		t.Fatalf("stepTDFA(Union(Concat(Tag1,a), Concat(Tag2,a)), 'a') want at least 2 configs, got %d", len(configs))
@@ -78,7 +78,7 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 	// right gives one with Tags [Tag2]. First in slice should be from left (Tag1).
 	var emptyConfigs []tdfaConfig
 	for _, c := range configs {
-		if _, ok := c.NextNode.(*EmptyNode); ok {
+		if _, ok := c.NextNode.(*emptyNode); ok {
 			emptyConfigs = append(emptyConfigs, c)
 		}
 	}
@@ -94,14 +94,14 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 func TestCountCaptureGroups(t *testing.T) {
 	tests := []struct {
 		name string
-		ast  Node
+		ast  node
 		want int
 	}{
-		{"no group", &LiteralNode{Value: 'a'}, 0},
-		{"one group", &GroupNode{GroupID: 1, Child: &LiteralNode{Value: 'a'}}, 1},
-		{"two groups", NewConcatNode(
-			&GroupNode{GroupID: 1, Child: &LiteralNode{Value: 'a'}},
-			&GroupNode{GroupID: 2, Child: &LiteralNode{Value: 'b'}},
+		{"no group", &literalNode{Value: 'a'}, 0},
+		{"one group", &groupNode{GroupID: 1, Child: &literalNode{Value: 'a'}}, 1},
+		{"two groups", newConcatNode(
+			&groupNode{GroupID: 1, Child: &literalNode{Value: 'a'}},
+			&groupNode{GroupID: 2, Child: &literalNode{Value: 'b'}},
 		), 2},
 	}
 	for _, tc := range tests {
@@ -120,7 +120,7 @@ func TestRunTDFA_AcceptingSetsCaptureZero(t *testing.T) {
 	if re.CaptureCount != 1 {
 		t.Fatalf("CaptureCount want 1, got %d", re.CaptureCount)
 	}
-	tagged := InjectCaptureTags(re.forward.root)
+	tagged := injectCaptureTags(re.forward.root)
 	configs := stepTDFA(tagged, 'a')
 	if len(configs) == 0 {
 		t.Fatalf("stepTDFA(taggedRoot, 'a') returned 0 configs (r might be wrong in getNextState)")

@@ -5,101 +5,101 @@ import (
 	"sort"
 )
 
-type Node interface {
+type node interface {
 	Nullable() bool
-	Derivative(char rune) Node
-	Equals(other Node) bool
-	Reverse() Node
+	Derivative(char rune) node
+	Equals(other node) bool
+	Reverse() node
 	String() string // Crucial for sorting and deduplicating states
 }
 
 // --- BASE NODES ---
-type FalseNode struct{}
+type falseNode struct{}
 
-func (n *FalseNode) Nullable() bool            { return false }
-func (n *FalseNode) Derivative(char rune) Node { return n }
-func (n *FalseNode) Equals(other Node) bool    { _, ok := other.(*FalseNode); return ok }
-func (n *FalseNode) Reverse() Node             { return n }
-func (n *FalseNode) String() string            { return "False" }
+func (n *falseNode) Nullable() bool            { return false }
+func (n *falseNode) Derivative(char rune) node { return n }
+func (n *falseNode) Equals(other node) bool    { _, ok := other.(*falseNode); return ok }
+func (n *falseNode) Reverse() node             { return n }
+func (n *falseNode) String() string            { return "False" }
 
-type EmptyNode struct{}
+type emptyNode struct{}
 
-func (n *EmptyNode) Nullable() bool            { return true }
-func (n *EmptyNode) Derivative(char rune) Node { return &FalseNode{} }
-func (n *EmptyNode) Equals(other Node) bool    { _, ok := other.(*EmptyNode); return ok }
-func (n *EmptyNode) Reverse() Node             { return n }
-func (n *EmptyNode) String() string            { return "Empty" }
+func (n *emptyNode) Nullable() bool            { return true }
+func (n *emptyNode) Derivative(char rune) node { return &falseNode{} }
+func (n *emptyNode) Equals(other node) bool    { _, ok := other.(*emptyNode); return ok }
+func (n *emptyNode) Reverse() node             { return n }
+func (n *emptyNode) String() string            { return "Empty" }
 
-type LiteralNode struct{ Value rune }
+type literalNode struct{ Value rune }
 
-func (n *LiteralNode) Nullable() bool { return false }
-func (n *LiteralNode) Derivative(char rune) Node {
+func (n *literalNode) Nullable() bool { return false }
+func (n *literalNode) Derivative(char rune) node {
 	if char == n.Value {
-		return &EmptyNode{}
+		return &emptyNode{}
 	}
-	return &FalseNode{}
+	return &falseNode{}
 }
-func (n *LiteralNode) Equals(other Node) bool {
-	o, ok := other.(*LiteralNode)
+func (n *literalNode) Equals(other node) bool {
+	o, ok := other.(*literalNode)
 	return ok && n.Value == o.Value
 }
-func (n *LiteralNode) Reverse() Node  { return n }
-func (n *LiteralNode) String() string { return fmt.Sprintf("Lit(%c)", n.Value) }
+func (n *literalNode) Reverse() node  { return n }
+func (n *literalNode) String() string { return fmt.Sprintf("Lit(%c)", n.Value) }
 
-type AnyNode struct{}
+type anyNode struct{}
 
-func (n *AnyNode) Nullable() bool            { return false }
-func (n *AnyNode) Derivative(char rune) Node {
+func (n *anyNode) Nullable() bool            { return false }
+func (n *anyNode) Derivative(char rune) node {
 	// Match any rune except newline, aligning with Go regexp (dot does not match \n by default).
 	if char == '\n' {
-		return &FalseNode{}
+		return &falseNode{}
 	}
-	return &EmptyNode{}
+	return &emptyNode{}
 }
-func (n *AnyNode) Equals(other Node) bool    { _, ok := other.(*AnyNode); return ok }
-func (n *AnyNode) Reverse() Node             { return n }
-func (n *AnyNode) String() string            { return "Any" }
+func (n *anyNode) Equals(other node) bool    { _, ok := other.(*anyNode); return ok }
+func (n *anyNode) Reverse() node             { return n }
+func (n *anyNode) String() string            { return "Any" }
 
-type CharClassNode struct{ Class string }
+type charClassNode struct{ Class string }
 
-func (n *CharClassNode) Nullable() bool { return false }
-func (n *CharClassNode) Derivative(char rune) Node {
+func (n *charClassNode) Nullable() bool { return false }
+func (n *charClassNode) Derivative(char rune) node {
 	p := parseCharClass(n.Class)
 	if char < 256 && p[char] {
-		return &EmptyNode{}
+		return &emptyNode{}
 	}
-	return &FalseNode{}
+	return &falseNode{}
 }
-func (n *CharClassNode) Equals(other Node) bool {
-	o, ok := other.(*CharClassNode)
+func (n *charClassNode) Equals(other node) bool {
+	o, ok := other.(*charClassNode)
 	return ok && n.Class == o.Class
 }
-func (n *CharClassNode) Reverse() Node  { return n }
-func (n *CharClassNode) String() string { return fmt.Sprintf("Class(%s)", n.Class) }
+func (n *charClassNode) Reverse() node  { return n }
+func (n *charClassNode) String() string { return fmt.Sprintf("Class(%s)", n.Class) }
 
 // --- SET-FLATTENED BOOLEAN OPERATORS ---
 
-type UnionNode struct{ Left, Right Node }
+type unionNode struct{ Left, Right node }
 
-func flattenUnion(n Node) []Node {
-	if u, ok := n.(*UnionNode); ok {
+func flattenUnion(n node) []node {
+	if u, ok := n.(*unionNode); ok {
 		return append(flattenUnion(u.Left), flattenUnion(u.Right)...)
 	}
-	if _, ok := n.(*FalseNode); ok {
+	if _, ok := n.(*falseNode); ok {
 		return nil // Drop False nodes instantly
 	}
-	return []Node{n}
+	return []node{n}
 }
 
-func NewUnionNode(left, right Node) Node {
+func newUnionNode(left, right node) node {
 	// 1. Flatten the entire nested structure into a slice
 	nodes := append(flattenUnion(left), flattenUnion(right)...)
 	if len(nodes) == 0 {
-		return &FalseNode{}
+		return &falseNode{}
 	}
 
 	// 2. Deduplicate mathematically identical states
-	var unique []Node
+	var unique []node
 	for _, n := range nodes {
 		exists := false
 		for _, u := range unique {
@@ -125,47 +125,47 @@ func NewUnionNode(left, right Node) Node {
 	// 4. Rebuild as a strictly right-heavy tree
 	res := unique[len(unique)-1]
 	for i := len(unique) - 2; i >= 0; i-- {
-		res = &UnionNode{Left: unique[i], Right: res}
+		res = &unionNode{Left: unique[i], Right: res}
 	}
 	return res
 }
 
-func (n *UnionNode) Nullable() bool { return n.Left.Nullable() || n.Right.Nullable() }
-func (n *UnionNode) Derivative(char rune) Node {
-	return NewUnionNode(n.Left.Derivative(char), n.Right.Derivative(char))
+func (n *unionNode) Nullable() bool { return n.Left.Nullable() || n.Right.Nullable() }
+func (n *unionNode) Derivative(char rune) node {
+	return newUnionNode(n.Left.Derivative(char), n.Right.Derivative(char))
 }
-func (n *UnionNode) Equals(other Node) bool {
-	o, ok := other.(*UnionNode)
+func (n *unionNode) Equals(other node) bool {
+	o, ok := other.(*unionNode)
 	return ok && ((n.Left.Equals(o.Left) && n.Right.Equals(o.Right)) || (n.Left.Equals(o.Right) && n.Right.Equals(o.Left)))
 }
-func (n *UnionNode) Reverse() Node { return NewUnionNode(n.Left.Reverse(), n.Right.Reverse()) }
-func (n *UnionNode) String() string {
+func (n *unionNode) Reverse() node { return newUnionNode(n.Left.Reverse(), n.Right.Reverse()) }
+func (n *unionNode) String() string {
 	return fmt.Sprintf("Union(%s,%s)", n.Left.String(), n.Right.String())
 }
 
-type IntersectNode struct{ Left, Right Node }
+type intersectNode struct{ Left, Right node }
 
-func flattenIntersect(n Node) []Node {
-	if i, ok := n.(*IntersectNode); ok {
+func flattenIntersect(n node) []node {
+	if i, ok := n.(*intersectNode); ok {
 		return append(flattenIntersect(i.Left), flattenIntersect(i.Right)...)
 	}
-	return []Node{n}
+	return []node{n}
 }
 
-func NewIntersectNode(left, right Node) Node {
-	if _, ok := left.(*FalseNode); ok {
-		return &FalseNode{}
+func newIntersectNode(left, right node) node {
+	if _, ok := left.(*falseNode); ok {
+		return &falseNode{}
 	}
-	if _, ok := right.(*FalseNode); ok {
-		return &FalseNode{}
+	if _, ok := right.(*falseNode); ok {
+		return &falseNode{}
 	}
 
 	nodes := append(flattenIntersect(left), flattenIntersect(right)...)
 
-	var unique []Node
+	var unique []node
 	for _, n := range nodes {
-		if _, ok := n.(*FalseNode); ok {
-			return &FalseNode{}
+		if _, ok := n.(*falseNode); ok {
+			return &falseNode{}
 		} // A & False = False
 		exists := false
 		for _, u := range unique {
@@ -189,144 +189,144 @@ func NewIntersectNode(left, right Node) Node {
 
 	res := unique[len(unique)-1]
 	for i := len(unique) - 2; i >= 0; i-- {
-		res = &IntersectNode{Left: unique[i], Right: res}
+		res = &intersectNode{Left: unique[i], Right: res}
 	}
 	return res
 }
 
-func (n *IntersectNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
-func (n *IntersectNode) Derivative(char rune) Node {
-	return NewIntersectNode(n.Left.Derivative(char), n.Right.Derivative(char))
+func (n *intersectNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
+func (n *intersectNode) Derivative(char rune) node {
+	return newIntersectNode(n.Left.Derivative(char), n.Right.Derivative(char))
 }
-func (n *IntersectNode) Equals(other Node) bool {
-	o, ok := other.(*IntersectNode)
+func (n *intersectNode) Equals(other node) bool {
+	o, ok := other.(*intersectNode)
 	return ok && ((n.Left.Equals(o.Left) && n.Right.Equals(o.Right)) || (n.Left.Equals(o.Right) && n.Right.Equals(o.Left)))
 }
-func (n *IntersectNode) Reverse() Node { return NewIntersectNode(n.Left.Reverse(), n.Right.Reverse()) }
-func (n *IntersectNode) String() string {
+func (n *intersectNode) Reverse() node { return newIntersectNode(n.Left.Reverse(), n.Right.Reverse()) }
+func (n *intersectNode) String() string {
 	return fmt.Sprintf("Int(%s,%s)", n.Left.String(), n.Right.String())
 }
 
-type ComplementNode struct{ Child Node }
+type complementNode struct{ Child node }
 
-func NewComplementNode(child Node) Node {
-	if inner, ok := child.(*ComplementNode); ok {
+func newComplementNode(child node) node {
+	if inner, ok := child.(*complementNode); ok {
 		return inner.Child
 	}
-	return &ComplementNode{child}
+	return &complementNode{child}
 }
-func (n *ComplementNode) Nullable() bool { return !n.Child.Nullable() }
-func (n *ComplementNode) Derivative(char rune) Node {
-	return NewComplementNode(n.Child.Derivative(char))
+func (n *complementNode) Nullable() bool { return !n.Child.Nullable() }
+func (n *complementNode) Derivative(char rune) node {
+	return newComplementNode(n.Child.Derivative(char))
 }
-func (n *ComplementNode) Equals(other Node) bool {
-	o, ok := other.(*ComplementNode)
+func (n *complementNode) Equals(other node) bool {
+	o, ok := other.(*complementNode)
 	return ok && n.Child.Equals(o.Child)
 }
-func (n *ComplementNode) Reverse() Node  { return NewComplementNode(n.Child.Reverse()) }
-func (n *ComplementNode) String() string { return fmt.Sprintf("Comp(%s)", n.Child.String()) }
+func (n *complementNode) Reverse() node  { return newComplementNode(n.Child.Reverse()) }
+func (n *complementNode) String() string { return fmt.Sprintf("Comp(%s)", n.Child.String()) }
 
 // --- CONCAT, STAR & GROUPS ---
-type ConcatNode struct{ Left, Right Node }
+type concatNode struct{ Left, Right node }
 
-func NewConcatNode(left, right Node) Node {
-	if _, ok := right.(*FalseNode); ok {
-		return &FalseNode{}
+func newConcatNode(left, right node) node {
+	if _, ok := right.(*falseNode); ok {
+		return &falseNode{}
 	}
-	if _, ok := left.(*FalseNode); ok {
-		return &FalseNode{}
+	if _, ok := left.(*falseNode); ok {
+		return &falseNode{}
 	}
-	if _, ok := left.(*EmptyNode); ok {
+	if _, ok := left.(*emptyNode); ok {
 		return right
 	}
-	if _, ok := right.(*EmptyNode); ok {
+	if _, ok := right.(*emptyNode); ok {
 		return left
 	}
-	return &ConcatNode{left, right}
+	return &concatNode{left, right}
 }
-func (n *ConcatNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
-func (n *ConcatNode) Derivative(char rune) Node {
-	leftDerivConcat := NewConcatNode(n.Left.Derivative(char), n.Right)
+func (n *concatNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
+func (n *concatNode) Derivative(char rune) node {
+	leftDerivConcat := newConcatNode(n.Left.Derivative(char), n.Right)
 	if n.Left.Nullable() {
-		return NewUnionNode(leftDerivConcat, n.Right.Derivative(char))
+		return newUnionNode(leftDerivConcat, n.Right.Derivative(char))
 	}
 	return leftDerivConcat
 }
-func (n *ConcatNode) Equals(other Node) bool {
-	o, ok := other.(*ConcatNode)
+func (n *concatNode) Equals(other node) bool {
+	o, ok := other.(*concatNode)
 	return ok && n.Left.Equals(o.Left) && n.Right.Equals(o.Right)
 }
-func (n *ConcatNode) Reverse() Node { return NewConcatNode(n.Right.Reverse(), n.Left.Reverse()) }
-func (n *ConcatNode) String() string {
+func (n *concatNode) Reverse() node { return newConcatNode(n.Right.Reverse(), n.Left.Reverse()) }
+func (n *concatNode) String() string {
 	return fmt.Sprintf("Cat(%s,%s)", n.Left.String(), n.Right.String())
 }
 
-type StarNode struct{ Child Node }
+type starNode struct{ Child node }
 
-func (n *StarNode) Nullable() bool            { return true }
-func (n *StarNode) Derivative(char rune) Node { return NewConcatNode(n.Child.Derivative(char), n) }
-func (n *StarNode) Equals(other Node) bool {
-	o, ok := other.(*StarNode)
+func (n *starNode) Nullable() bool            { return true }
+func (n *starNode) Derivative(char rune) node { return newConcatNode(n.Child.Derivative(char), n) }
+func (n *starNode) Equals(other node) bool {
+	o, ok := other.(*starNode)
 	return ok && n.Child.Equals(o.Child)
 }
-func (n *StarNode) Reverse() Node  { return &StarNode{Child: n.Child.Reverse()} }
-func (n *StarNode) String() string { return fmt.Sprintf("Star(%s)", n.Child.String()) }
+func (n *starNode) Reverse() node  { return &starNode{Child: n.Child.Reverse()} }
+func (n *starNode) String() string { return fmt.Sprintf("Star(%s)", n.Child.String()) }
 
-type GroupNode struct {
+type groupNode struct {
 	GroupID int
-	Child   Node
+	Child   node
 }
 
-func (n *GroupNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *GroupNode) Derivative(char rune) Node { return n.Child.Derivative(char) }
-func (n *GroupNode) Equals(other Node) bool {
-	o, ok := other.(*GroupNode)
+func (n *groupNode) Nullable() bool            { return n.Child.Nullable() }
+func (n *groupNode) Derivative(char rune) node { return n.Child.Derivative(char) }
+func (n *groupNode) Equals(other node) bool {
+	o, ok := other.(*groupNode)
 	return ok && n.GroupID == o.GroupID && n.Child.Equals(o.Child)
 }
-func (n *GroupNode) Reverse() Node  { return &GroupNode{GroupID: n.GroupID, Child: n.Child.Reverse()} }
-func (n *GroupNode) String() string { return fmt.Sprintf("Group%d(%s)", n.GroupID, n.Child.String()) }
+func (n *groupNode) Reverse() node  { return &groupNode{GroupID: n.GroupID, Child: n.Child.Reverse()} }
+func (n *groupNode) String() string { return fmt.Sprintf("Group%d(%s)", n.GroupID, n.Child.String()) }
 
-// LookAheadNode is (?=R). Zero-width; does not consume input. Foundation for TDFA.
-type LookAheadNode struct{ Child Node }
+// lookAheadNode is (?=R). Zero-width; does not consume input. Foundation for TDFA.
+type lookAheadNode struct{ Child node }
 
-func (n *LookAheadNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *LookAheadNode) Derivative(r rune) Node   { return &LookAheadNode{Child: n.Child.Derivative(r)} }
-func (n *LookAheadNode) Equals(other Node) bool {
-	o, ok := other.(*LookAheadNode)
+func (n *lookAheadNode) Nullable() bool            { return n.Child.Nullable() }
+func (n *lookAheadNode) Derivative(r rune) node   { return &lookAheadNode{Child: n.Child.Derivative(r)} }
+func (n *lookAheadNode) Equals(other node) bool {
+	o, ok := other.(*lookAheadNode)
 	return ok && n.Child.Equals(o.Child)
 }
-func (n *LookAheadNode) Reverse() Node  { return n }
-func (n *LookAheadNode) String() string { return fmt.Sprintf("LookAhead(%s)", n.Child.String()) }
+func (n *lookAheadNode) Reverse() node  { return n }
+func (n *lookAheadNode) String() string { return fmt.Sprintf("LookAhead(%s)", n.Child.String()) }
 
-// LookBehindNode is (?<=R). Zero-width; foundation for TDFA.
-type LookBehindNode struct{ Child Node }
+// lookBehindNode is (?<=R). Zero-width; foundation for TDFA.
+type lookBehindNode struct{ Child node }
 
-func (n *LookBehindNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *LookBehindNode) Derivative(r rune) Node   { return &LookBehindNode{Child: n.Child.Derivative(r)} }
-func (n *LookBehindNode) Equals(other Node) bool {
-	o, ok := other.(*LookBehindNode)
+func (n *lookBehindNode) Nullable() bool            { return n.Child.Nullable() }
+func (n *lookBehindNode) Derivative(r rune) node   { return &lookBehindNode{Child: n.Child.Derivative(r)} }
+func (n *lookBehindNode) Equals(other node) bool {
+	o, ok := other.(*lookBehindNode)
 	return ok && n.Child.Equals(o.Child)
 }
-func (n *LookBehindNode) Reverse() Node  { return n }
-func (n *LookBehindNode) String() string { return fmt.Sprintf("LookBehind(%s)", n.Child.String()) }
+func (n *lookBehindNode) Reverse() node  { return n }
+func (n *lookBehindNode) String() string { return fmt.Sprintf("LookBehind(%s)", n.Child.String()) }
 
 // --- TDFA: capture boundaries (zero-width) ---
 
-// TagNode marks a capture boundary for the TDFA. Zero-width; does not consume input.
+// tagNode marks a capture boundary for the TDFA. Zero-width; does not consume input.
 // Id is the capture group number (1-based). IsStart true = open (set start index), false = close (set end index).
-type TagNode struct {
+type tagNode struct {
 	Id      int
 	IsStart bool
 }
 
-func (n *TagNode) Nullable() bool            { return true }
-func (n *TagNode) Derivative(rune) Node      { return &EmptyNode{} }
-func (n *TagNode) Equals(other Node) bool {
-	o, ok := other.(*TagNode)
+func (n *tagNode) Nullable() bool            { return true }
+func (n *tagNode) Derivative(rune) node      { return &emptyNode{} }
+func (n *tagNode) Equals(other node) bool {
+	o, ok := other.(*tagNode)
 	return ok && n.Id == o.Id && n.IsStart == o.IsStart
 }
-func (n *TagNode) Reverse() Node { return &TagNode{Id: n.Id, IsStart: !n.IsStart} }
-func (n *TagNode) String() string {
+func (n *tagNode) Reverse() node { return &tagNode{Id: n.Id, IsStart: !n.IsStart} }
+func (n *tagNode) String() string {
 	if n.IsStart {
 		return fmt.Sprintf("Tag(%d,start)", n.Id)
 	}

@@ -18,3 +18,29 @@ type RegExp interface {
 	ReplaceAllString(s, repl string) string
 	Clone() RegExp
 }
+
+func MustCompile(expr string) RegExp {
+	re, err := Compile(expr)
+	if err != nil {
+		panic(err)
+	}
+	return re
+}
+
+// Concurrent returns a thread-safe RegExp implementation. If re is already
+// a ConcurrentRegExp it is returned unchanged; otherwise re must be from
+// Compile/MustCompile and is wrapped in a new ConcurrentRegExp.
+func Concurrent(re RegExp) RegExp {
+	if c, ok := re.(*concurrentRegExpImpl); ok {
+		return c
+	}
+	if impl, ok := re.(*regexpImpl); ok {
+		return &concurrentRegExpImpl{re: impl}
+	}
+	return re
+}
+
+// Compile compiles a regular expression into a RegExp.
+func Compile(expr string) (RegExp, error) {
+	return compile(expr)
+}

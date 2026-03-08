@@ -10,50 +10,49 @@ type tagOp struct {
 
 // tdfaConfig is one possible (next state, tag ops) after reading a character.
 type tdfaConfig struct {
-	NextNode Node
+	NextNode node
 	Tags     []tagOp
 }
 
 // stepTDFA computes the derivative and collects tags simultaneously.
 // It does not call Node.Derivative() so smart constructors never collapse Union.
 // Returns one config per surviving path (e.g. Union returns multiple configs).
-func stepTDFA(n Node, c rune) []tdfaConfig {
-	switch node := n.(type) {
-	case *LiteralNode:
-		if node.Value == c {
-			return []tdfaConfig{{NextNode: &EmptyNode{}, Tags: nil}}
+func stepTDFA(n node, c rune) []tdfaConfig {
+	switch nd := n.(type) {
+	case *literalNode:
+		if nd.Value == c {
+			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &FalseNode{}, Tags: nil}}
-	case *CharClassNode:
-		p := parseCharClass(node.Class)
+		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+	case *charClassNode:
+		p := parseCharClass(nd.Class)
 		if c < 256 && p[c] {
-			return []tdfaConfig{{NextNode: &EmptyNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &FalseNode{}, Tags: nil}}
-	case *AnyNode:
+		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+	case *anyNode:
 		if c == '\n' {
-			return []tdfaConfig{{NextNode: &FalseNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &EmptyNode{}, Tags: nil}}
-	case *FalseNode:
-		return []tdfaConfig{{NextNode: &FalseNode{}, Tags: nil}}
-	case *EmptyNode:
-		return []tdfaConfig{{NextNode: &FalseNode{}, Tags: nil}}
-	case *TagNode:
-		// Zero-width: step to Empty. Do not emit here; tag is emitted when we enter (Concat with next=TagNode after Empty).
-		return []tdfaConfig{{NextNode: &EmptyNode{}, Tags: nil}}
-	case *UnionNode:
-		left := stepTDFA(node.Left, c)
-		right := stepTDFA(node.Right, c)
+		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+	case *falseNode:
+		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+	case *emptyNode:
+		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+	case *tagNode:
+		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+	case *unionNode:
+		left := stepTDFA(nd.Left, c)
+		right := stepTDFA(nd.Right, c)
 		return append(left, right...)
-	case *ConcatNode:
-		leftConfigs := stepTDFA(node.Left, c)
+	case *concatNode:
+		leftConfigs := stepTDFA(nd.Left, c)
 		var result []tdfaConfig
-		if node.Left.Nullable() {
-			rightConfigs := stepTDFA(node.Right, c)
+		if nd.Left.Nullable() {
+			rightConfigs := stepTDFA(nd.Right, c)
 			for _, rc := range rightConfigs {
 				tags := rc.Tags
-				if t, ok := node.Left.(*TagNode); ok {
+				if t, ok := nd.Left.(*tagNode); ok {
 					tags = make([]tagOp, 0, len(rc.Tags)+1)
 					tags = append(tags, tagOp{Id: t.Id, IsStart: t.IsStart})
 					tags = append(tags, rc.Tags...)
@@ -62,66 +61,64 @@ func stepTDFA(n Node, c rune) []tdfaConfig {
 			}
 		}
 		for _, lc := range leftConfigs {
-			var next Node
+			var next node
 			tags := lc.Tags
-			if _, isEmpty := lc.NextNode.(*EmptyNode); isEmpty {
-				next = node.Right
-				// Emit tag only when entering Tag after consuming content (not when skipping False/etc).
-				if t, ok := node.Right.(*TagNode); ok {
+			if _, isEmpty := lc.NextNode.(*emptyNode); isEmpty {
+				next = nd.Right
+				if t, ok := nd.Right.(*tagNode); ok {
 					tags = make([]tagOp, len(lc.Tags)+1)
 					copy(tags, lc.Tags)
 					tags[len(lc.Tags)] = tagOp{Id: t.Id, IsStart: t.IsStart}
 				}
 			} else {
-				next = &ConcatNode{Left: lc.NextNode, Right: node.Right}
+				next = &concatNode{Left: lc.NextNode, Right: nd.Right}
 			}
 			result = append(result, tdfaConfig{NextNode: next, Tags: tags})
 		}
 		return result
-	case *StarNode:
-		childConfigs := stepTDFA(node.Child, c)
+	case *starNode:
+		childConfigs := stepTDFA(nd.Child, c)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
-			if _, isEmpty := cc.NextNode.(*EmptyNode); isEmpty {
-				result = append(result, tdfaConfig{NextNode: node, Tags: cc.Tags})
+			if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
+				result = append(result, tdfaConfig{NextNode: nd, Tags: cc.Tags})
 			} else {
 				result = append(result, tdfaConfig{
-					NextNode: &ConcatNode{Left: cc.NextNode, Right: node},
+					NextNode: &concatNode{Left: cc.NextNode, Right: nd},
 					Tags:     cc.Tags,
 				})
 			}
 		}
 		return result
-	case *GroupNode:
-		return stepTDFA(node.Child, c)
-	case *LookAheadNode:
-		childConfigs := stepTDFA(node.Child, c)
+	case *groupNode:
+		return stepTDFA(nd.Child, c)
+	case *lookAheadNode:
+		childConfigs := stepTDFA(nd.Child, c)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: &LookAheadNode{Child: cc.NextNode},
+				NextNode: &lookAheadNode{Child: cc.NextNode},
 				Tags:     cc.Tags,
 			})
 		}
 		return result
-	case *LookBehindNode:
-		childConfigs := stepTDFA(node.Child, c)
+	case *lookBehindNode:
+		childConfigs := stepTDFA(nd.Child, c)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: &LookBehindNode{Child: cc.NextNode},
+				NextNode: &lookBehindNode{Child: cc.NextNode},
 				Tags:     cc.Tags,
 			})
 		}
 		return result
-	case *IntersectNode:
-		leftConfigs := stepTDFA(node.Left, c)
-		rightConfigs := stepTDFA(node.Right, c)
+	case *intersectNode:
+		leftConfigs := stepTDFA(nd.Left, c)
+		rightConfigs := stepTDFA(nd.Right, c)
 		var result []tdfaConfig
 		for _, lc := range leftConfigs {
 			for _, rc := range rightConfigs {
 				if lc.NextNode.Equals(rc.NextNode) {
-					// Both branches agree on next node; merge tags (order: left then right)
 					tags := append([]tagOp{}, lc.Tags...)
 					tags = append(tags, rc.Tags...)
 					result = append(result, tdfaConfig{NextNode: lc.NextNode, Tags: tags})
@@ -130,12 +127,12 @@ func stepTDFA(n Node, c rune) []tdfaConfig {
 			}
 		}
 		return result
-	case *ComplementNode:
-		childConfigs := stepTDFA(node.Child, c)
+	case *complementNode:
+		childConfigs := stepTDFA(nd.Child, c)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: NewComplementNode(cc.NextNode),
+				NextNode: newComplementNode(cc.NextNode),
 				Tags:     cc.Tags,
 			})
 		}
@@ -145,74 +142,72 @@ func stepTDFA(n Node, c rune) []tdfaConfig {
 	}
 }
 
-// InjectCaptureTags replaces each GroupNode(id, child) with Concat(Tag(id,start), Concat(child, Tag(id,end))).
-// Used to build the tagged AST for the TDFA; the plain DFA never sees TagNodes.
-func InjectCaptureTags(ast Node) Node {
+// injectCaptureTags replaces each groupNode(id, child) with Concat(Tag(id,start), Concat(child, Tag(id,end))).
+func injectCaptureTags(ast node) node {
 	switch n := ast.(type) {
-	case *GroupNode:
-		inner := InjectCaptureTags(n.Child)
-		return &ConcatNode{
-			Left: &TagNode{Id: n.GroupID, IsStart: true},
-			Right: &ConcatNode{
+	case *groupNode:
+		inner := injectCaptureTags(n.Child)
+		return &concatNode{
+			Left: &tagNode{Id: n.GroupID, IsStart: true},
+			Right: &concatNode{
 				Left:  inner,
-				Right: &TagNode{Id: n.GroupID, IsStart: false},
+				Right: &tagNode{Id: n.GroupID, IsStart: false},
 			},
 		}
-	case *ConcatNode:
-		return &ConcatNode{
-			Left:  InjectCaptureTags(n.Left),
-			Right: InjectCaptureTags(n.Right),
+	case *concatNode:
+		return &concatNode{
+			Left:  injectCaptureTags(n.Left),
+			Right: injectCaptureTags(n.Right),
 		}
-	case *UnionNode:
-		return &UnionNode{
-			Left:  InjectCaptureTags(n.Left),
-			Right: InjectCaptureTags(n.Right),
+	case *unionNode:
+		return &unionNode{
+			Left:  injectCaptureTags(n.Left),
+			Right: injectCaptureTags(n.Right),
 		}
-	case *StarNode:
-		return &StarNode{Child: InjectCaptureTags(n.Child)}
-	case *IntersectNode:
-		return &IntersectNode{
-			Left:  InjectCaptureTags(n.Left),
-			Right: InjectCaptureTags(n.Right),
+	case *starNode:
+		return &starNode{Child: injectCaptureTags(n.Child)}
+	case *intersectNode:
+		return &intersectNode{
+			Left:  injectCaptureTags(n.Left),
+			Right: injectCaptureTags(n.Right),
 		}
-	case *ComplementNode:
-		return &ComplementNode{Child: InjectCaptureTags(n.Child)}
-	case *LookAheadNode:
-		return &LookAheadNode{Child: InjectCaptureTags(n.Child)}
-	case *LookBehindNode:
-		return &LookBehindNode{Child: InjectCaptureTags(n.Child)}
+	case *complementNode:
+		return &complementNode{Child: injectCaptureTags(n.Child)}
+	case *lookAheadNode:
+		return &lookAheadNode{Child: injectCaptureTags(n.Child)}
+	case *lookBehindNode:
+		return &lookBehindNode{Child: injectCaptureTags(n.Child)}
 	default:
 		return ast
 	}
 }
 
-// countCaptureGroups returns the number of capturing groups in the AST (GroupNode count).
-func countCaptureGroups(ast Node) int {
+func countCaptureGroups(ast node) int {
 	var count int
-	var walk func(Node)
-	walk = func(n Node) {
-		if g, ok := n.(*GroupNode); ok {
+	var walk func(node)
+	walk = func(n node) {
+		if g, ok := n.(*groupNode); ok {
 			count++
 			walk(g.Child)
 			return
 		}
 		switch n := n.(type) {
-		case *ConcatNode:
+		case *concatNode:
 			walk(n.Left)
 			walk(n.Right)
-		case *UnionNode:
+		case *unionNode:
 			walk(n.Left)
 			walk(n.Right)
-		case *StarNode:
+		case *starNode:
 			walk(n.Child)
-		case *IntersectNode:
+		case *intersectNode:
 			walk(n.Left)
 			walk(n.Right)
-		case *ComplementNode:
+		case *complementNode:
 			walk(n.Child)
-		case *LookAheadNode:
+		case *lookAheadNode:
 			walk(n.Child)
-		case *LookBehindNode:
+		case *lookBehindNode:
 			walk(n.Child)
 		}
 	}
@@ -231,21 +226,21 @@ type tdfaTransition struct {
 
 // lazyTDFA is like lazyDFA but transitions carry tag ops. Used only for submatch extraction.
 type lazyTDFA struct {
-	root        Node
-	minterms    *MintermTable
-	stateASTs   []Node
+	root        node
+	minterms    *mintermTable
+	stateASTs   []node
 	transitions [][]tdfaTransition
 	isMatch     []bool
 	deadStateID int
 	numCaptures int
 }
 
-func newLazyTDFA(taggedRoot Node, minterms *MintermTable, numCaptures int) *lazyTDFA {
-	dead := &FalseNode{}
+func newLazyTDFA(taggedRoot node, minterms *mintermTable, numCaptures int) *lazyTDFA {
+	dead := &falseNode{}
 	dfa := &lazyTDFA{
 		root:        taggedRoot,
 		minterms:    minterms,
-		stateASTs:   []Node{taggedRoot, dead},
+		stateASTs:   []node{taggedRoot, dead},
 		transitions: make([][]tdfaTransition, 2),
 		isMatch:     []bool{taggedRoot.Nullable(), false},
 		deadStateID: 1,
@@ -349,7 +344,7 @@ func (dfa *lazyTDFA) runTDFA(s string) [][]int {
 			break
 		}
 		r, size := utf8.DecodeRuneInString(s[pos:])
-		mintermID := dfa.minterms.RuneToClass(r)
+	mintermID := dfa.minterms.runeToClass(r)
 		nextState, tags := dfa.getNextState(state, mintermID)
 		for _, t := range tags {
 			if t.Id >= ncap {
