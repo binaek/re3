@@ -6,23 +6,24 @@ const (
 	tokenError tokenType = iota
 	tokenEOF
 	tokenLiteral
-	tokenUnion      // |
-	tokenIntersect  // &
-	tokenComplement // ~
-	tokenStar       // *
-	tokenPlus       // +
-	tokenQuestion   // ?
-	tokenLParen     // (
-	tokenRParen     // )
-	tokenCharClass  // [...]
-	tokenEscape     // \
-	tokenDot        // .
-	tokenLBrace     // {
-	tokenRBrace     // }
-	tokenNumber     // digits for {n,m}
-	tokenComma      // ,
-	tokenLookAhead  // (?=
-	tokenLookBehind // (?<=
+	tokenUnion       // |
+	tokenIntersect   // &
+	tokenComplement  // ~
+	tokenStar        // *
+	tokenPlus        // +
+	tokenQuestion    // ?
+	tokenLParen      // (
+	tokenRParen      // )
+	tokenCharClass   // [...]
+	tokenEscape      // \
+	tokenDot         // .
+	tokenLBrace      // {
+	tokenRBrace      // }
+	tokenNumber      // digits for {n,m}
+	tokenComma       // ,
+	tokenLookAhead   // (?=
+	tokenLookBehind  // (?<=
+	tokenNonCapParen // (?:
 )
 
 type token struct {
@@ -70,6 +71,11 @@ func (l *lexer) nextToken() token {
 	case '(':
 		if l.pos+1 < len(l.input) && l.input[l.pos] == '?' {
 			l.pos++
+			if l.input[l.pos] == ':' {
+				l.pos++
+				l.lastType = tokenNonCapParen
+				return token{Type: tokenNonCapParen}
+			}
 			if l.input[l.pos] == '=' {
 				l.pos++
 				l.lastType = tokenLookAhead

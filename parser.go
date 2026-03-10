@@ -28,14 +28,15 @@ type parser struct {
 func newParser(tokens []token, expr string) *parser {
 	p := &parser{tokens: tokens, pos: -1, expr: expr}
 	p.prefixParseFns = map[tokenType]func() (node, error){
-		tokenLiteral:    p.parseLiteral,
-		tokenEscape:     p.parseEscape,
-		tokenCharClass:  p.parseCharClass,
-		tokenComplement: p.parseComplement,
-		tokenLParen:     p.parseGroup,
-		tokenDot:        p.parseDot,
-		tokenLookAhead:  p.parseLookAhead,
-		tokenLookBehind: p.parseLookBehind,
+		tokenLiteral:     p.parseLiteral,
+		tokenEscape:      p.parseEscape,
+		tokenCharClass:   p.parseCharClass,
+		tokenComplement:  p.parseComplement,
+		tokenLParen:      p.parseGroup,
+		tokenDot:         p.parseDot,
+		tokenLookAhead:   p.parseLookAhead,
+		tokenLookBehind:  p.parseLookBehind,
+		tokenNonCapParen: p.parseNonCapGroup,
 	}
 	p.infixParseFns = map[tokenType]func(node) (node, error){
 		tokenUnion:     p.parseUnion,
@@ -133,6 +134,19 @@ func (p *parser) parseGroup() (node, error) {
 	p.nextToken()
 	return &groupNode{GroupID: id, Child: exp}, nil
 }
+
+func (p *parser) parseNonCapGroup() (node, error) {
+	p.nextToken()
+	exp, err := p.parseExpression(LOWEST)
+	if err != nil {
+		return nil, err
+	}
+	if p.peekToken.Type != tokenRParen {
+		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
+	}
+	p.nextToken()
+	return exp, nil
+}
 func (p *parser) parseUnion(left node) (node, error) {
 	p.nextToken()
 	right, err := p.parseExpression(UNION)
@@ -149,8 +163,10 @@ func (p *parser) parseIntersect(left node) (node, error) {
 	}
 	return newIntersectNode(left, right), nil
 }
-func (p *parser) parseStar(left node) (node, error)     { return &starNode{Child: left}, nil }
-func (p *parser) parsePlus(left node) (node, error)     { return newConcatNode(left, &starNode{Child: left}), nil }
+func (p *parser) parseStar(left node) (node, error) { return &starNode{Child: left}, nil }
+func (p *parser) parsePlus(left node) (node, error) {
+	return newConcatNode(left, &starNode{Child: left}), nil
+}
 func (p *parser) parseQuestion(left node) (node, error) { return newUnionNode(left, &emptyNode{}), nil }
 
 func (p *parser) parseBoundedRepeat(left node) (node, error) {
@@ -226,7 +242,7 @@ func desugarRepeatMinMax(child node, n, m int, expr string) (node, error) {
 
 func (p *parser) isPeekStartOfExpression() bool {
 	t := p.peekToken.Type
-	return t == tokenLiteral || t == tokenLParen || t == tokenComplement ||
+	return t == tokenLiteral || t == tokenLParen || t == tokenNonCapParen || t == tokenComplement ||
 		t == tokenCharClass || t == tokenEscape || t == tokenDot ||
 		t == tokenLookAhead || t == tokenLookBehind
 }
