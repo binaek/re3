@@ -1,6 +1,7 @@
 package re3
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -294,6 +295,17 @@ func TestReplaceAllString(t *testing.T) {
 	}
 }
 
+func TestReplaceAll(t *testing.T) {
+	for i, tc := range replaceTests {
+		re := MustCompile(tc.pattern)
+		got := re.ReplaceAll([]byte(tc.input), []byte(tc.repl))
+		want := []byte(tc.want)
+		if !bytes.Equal(got, want) {
+			t.Errorf("ReplaceAll case %d: pattern=%q repl=%q input=%q:\n  got  %q\n  want %q", i, tc.pattern, tc.repl, tc.input, string(got), tc.want)
+		}
+	}
+}
+
 func TestSplit(t *testing.T) {
 	for i, tc := range splitTests {
 		re := MustCompile(tc.pat)
@@ -554,6 +566,13 @@ func TestConcurrent(t *testing.T) {
 		got := cre.ReplaceAllString("banana", "X")
 		if got != "bXnXnX" {
 			t.Errorf("ConcurrentRegExp.ReplaceAllString = %q, want bXnXnX", got)
+		}
+	})
+	t.Run("ReplaceAll", func(t *testing.T) {
+		cre := Concurrent(MustCompile("a+"))
+		got := cre.ReplaceAll([]byte("banana"), []byte("X"))
+		if want := []byte("bXnXnX"); !bytes.Equal(got, want) {
+			t.Errorf("ConcurrentRegExp.ReplaceAll = %q, want %q", got, want)
 		}
 	})
 	t.Run("Split", func(t *testing.T) {
@@ -1068,6 +1087,28 @@ func BenchmarkCompareReplaceAllString(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			reStd.ReplaceAllString(s, "")
+		}
+	})
+}
+
+func BenchmarkCompareReplaceAll(b *testing.B) {
+	pat := "[cjrw]"
+	s := []byte("abcdefghijklmnopqrstuvwxyz")
+	repl := []byte("")
+	reRE3 := MustCompile(pat)
+	reStd := regexp.MustCompile(pat)
+	b.Run("re3", func(b *testing.B) {
+		reRE3.ReplaceAll(s, repl)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reRE3.ReplaceAll(s, repl)
+		}
+	})
+	b.Run("std", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reStd.ReplaceAll(s, repl)
 		}
 	})
 }
