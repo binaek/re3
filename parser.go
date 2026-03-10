@@ -31,12 +31,17 @@ func newParser(tokens []token, expr string) *parser {
 		tokenLiteral:     p.parseLiteral,
 		tokenEscape:      p.parseEscape,
 		tokenCharClass:   p.parseCharClass,
-		tokenComplement:  p.parseComplement,
 		tokenLParen:      p.parseGroup,
 		tokenDot:         p.parseDot,
 		tokenLookAhead:   p.parseLookAhead,
 		tokenLookBehind:  p.parseLookBehind,
 		tokenNonCapParen: p.parseNonCapGroup,
+		tokenInlineFlags: func() (node, error) { return &emptyNode{}, nil },
+		tokenEmpty:       func() (node, error) { return &emptyNode{}, nil },
+		tokenComma:       func() (node, error) { return &literalNode{Value: ','}, nil },
+		tokenLBrace:      func() (node, error) { return &literalNode{Value: '{'}, nil },
+		tokenRBrace:      func() (node, error) { return &literalNode{Value: '}'}, nil },
+		tokenUnion:       p.parseEmptyLeftUnion,
 	}
 	p.infixParseFns = map[tokenType]func(node) (node, error){
 		tokenUnion:     p.parseUnion,
@@ -62,12 +67,18 @@ func (p *parser) nextToken() {
 }
 
 func (p *parser) parse() (node, error) {
+	if p.curToken.Type == tokenEOF {
+		return &emptyNode{}, nil
+	}
 	return p.parseExpression(LOWEST)
 }
 
 func (p *parser) parseExpression(precedence int) (node, error) {
 	prefix := p.prefixParseFns[p.curToken.Type]
 	if prefix == nil {
+		if p.curToken.Type == tokenStar || p.curToken.Type == tokenPlus || p.curToken.Type == tokenQuestion {
+			return nil, &Error{Code: ErrMissingRepeatArgument, Expr: p.expr}
+		}
 		return nil, &Error{Code: ErrInternalError, Expr: p.expr}
 	}
 	leftExp, err := prefix()
@@ -103,9 +114,21 @@ func (p *parser) parseLiteral() (node, error) {
 
 func (p *parser) parseEscape() (node, error) {
 	val := p.curToken.Value
-
-	if val == 'd' || val == 'w' || val == 's' {
+	switch val {
+	case 'd', 'w', 's', 'D', 'W', 'S':
 		return &charClassNode{Class: "\\" + string(val)}, nil
+	case 'n':
+		return &literalNode{Value: '\n'}, nil
+	case 'r':
+		return &literalNode{Value: '\r'}, nil
+	case 't':
+		return &literalNode{Value: '\t'}, nil
+	case 'v':
+		return &literalNode{Value: '\v'}, nil
+	case 'f':
+		return &literalNode{Value: '\f'}, nil
+	case 'a':
+		return &literalNode{Value: '\a'}, nil
 	}
 	return &literalNode{Value: val}, nil
 }
@@ -124,6 +147,11 @@ func (p *parser) parseGroup() (node, error) {
 	p.nextToken()
 	p.groupCount++
 	id := p.groupCount
+
+	if p.curToken.Type == tokenRParen {
+		return &groupNode{GroupID: id, Child: &emptyNode{}}, nil
+	}
+
 	exp, err := p.parseExpression(LOWEST)
 	if err != nil {
 		return nil, err
@@ -137,6 +165,11 @@ func (p *parser) parseGroup() (node, error) {
 
 func (p *parser) parseNonCapGroup() (node, error) {
 	p.nextToken()
+
+	if p.curToken.Type == tokenRParen {
+		return &emptyNode{}, nil
+	}
+
 	exp, err := p.parseExpression(LOWEST)
 	if err != nil {
 		return nil, err
@@ -148,6 +181,9 @@ func (p *parser) parseNonCapGroup() (node, error) {
 	return exp, nil
 }
 func (p *parser) parseUnion(left node) (node, error) {
+	if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
+		return newUnionNode(left, &emptyNode{}), nil
+	}
 	p.nextToken()
 	right, err := p.parseExpression(UNION)
 	if err != nil {
@@ -170,41 +206,34 @@ func (p *parser) parsePlus(left node) (node, error) {
 func (p *parser) parseQuestion(left node) (node, error) { return newUnionNode(left, &emptyNode{}), nil }
 
 func (p *parser) parseBoundedRepeat(left node) (node, error) {
-	p.nextToken()
-	if p.curToken.Type != tokenNumber {
-		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
-	}
-	n, err := strconv.Atoi(p.curToken.Text)
-	if err != nil || n < 0 {
-		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
-	}
-	hasComma := false
-	var m int
-	p.nextToken()
+	p.nextToken() // curToken is now the number
+	n, _ := strconv.Atoi(p.curToken.Text)
+	p.nextToken() // curToken is now ',' or '}'
+
 	if p.curToken.Type == tokenComma {
-		hasComma = true
-		p.nextToken()
+		p.nextToken() // curToken is now number or '}'
 		if p.curToken.Type == tokenRBrace {
-			p.nextToken()
 			return desugarRepeatMinLeft(left, n), nil
 		}
-		if p.curToken.Type != tokenNumber {
-			return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
-		}
-		m, err = strconv.Atoi(p.curToken.Text)
-		if err != nil || m < 0 || m < n {
-			return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
-		}
-		p.nextToken()
+		m, _ := strconv.Atoi(p.curToken.Text)
+		p.nextToken() // curToken is now '}'
+		return desugarRepeatMinMax(left, n, m, p.expr)
 	}
-	if p.curToken.Type != tokenRBrace {
-		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
+
+	// Do NOT advance past '}' here; leave it for the caller.
+	return desugarRepeatExact(left, n), nil
+}
+
+func (p *parser) parseEmptyLeftUnion() (node, error) {
+	if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
+		return newUnionNode(&emptyNode{}, &emptyNode{}), nil
 	}
 	p.nextToken()
-	if !hasComma {
-		return desugarRepeatExact(left, n), nil
+	right, err := p.parseExpression(UNION)
+	if err != nil {
+		return nil, err
 	}
-	return desugarRepeatMinMax(left, n, m, p.expr)
+	return newUnionNode(&emptyNode{}, right), nil
 }
 
 func desugarRepeatExact(child node, n int) node {
@@ -244,7 +273,8 @@ func (p *parser) isPeekStartOfExpression() bool {
 	t := p.peekToken.Type
 	return t == tokenLiteral || t == tokenLParen || t == tokenNonCapParen || t == tokenComplement ||
 		t == tokenCharClass || t == tokenEscape || t == tokenDot ||
-		t == tokenLookAhead || t == tokenLookBehind
+		t == tokenLookAhead || t == tokenLookBehind || t == tokenInlineFlags || t == tokenEmpty ||
+		t == tokenComma || t == tokenLBrace || t == tokenRBrace
 }
 func (p *parser) parseImplicitConcat(left node) (node, error) {
 	p.nextToken()

@@ -145,7 +145,8 @@ func compile(expr string) (RegExp, error) {
 			return nil, &Error{Code: code, Expr: expr}
 		}
 	}
-	ast, err := newParser(tokens, expr).parse()
+	parser := newParser(tokens, expr)
+	ast, err := parser.parse()
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +298,13 @@ func extractPredicates(n node) []predicate {
 func parseCharClass(classStr string) predicate {
 	var p predicate
 	runes := []rune(classStr)
-	for i := 0; i < len(runes); i++ {
+	negate := false
+	startIdx := 0
+	if len(runes) > 0 && runes[0] == '^' {
+		negate = true
+		startIdx = 1
+	}
+	for i := startIdx; i < len(runes); i++ {
 		if i+2 < len(runes) && runes[i+1] == '-' {
 			start, end := runes[i], runes[i+2]
 			for b := start; b <= end; b++ {
@@ -329,6 +336,56 @@ func parseCharClass(classStr string) predicate {
 				p['\t'] = true
 				p['\n'] = true
 				p['\r'] = true
+			case 'D':
+				for b := 0; b < 256; b++ {
+					if !(b >= '0' && b <= '9') {
+						p[b] = true
+					}
+				}
+			case 'W':
+				for b := 0; b < 256; b++ {
+					isW := (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+					if !isW {
+						p[b] = true
+					}
+				}
+			case 'S':
+				for b := 0; b < 256; b++ {
+					isS := b == ' ' || b == '\t' || b == '\n' || b == '\r'
+					if !isS {
+						p[b] = true
+					}
+				}
+			case 'p', 'P':
+				if i+1 < len(runes) && runes[i+1] == '{' {
+					for i+1 < len(runes) && runes[i+1] != '}' {
+						i++
+					}
+					if i+1 < len(runes) && runes[i+1] == '}' {
+						i++
+					}
+				} else if i+1 < len(runes) {
+					i++
+				}
+				// Approximate Unicode classes to ASCII letters for v1.0
+				for b := 'a'; b <= 'z'; b++ {
+					p[b] = true
+				}
+				for b := 'A'; b <= 'Z'; b++ {
+					p[b] = true
+				}
+			case 'n':
+				p['\n'] = true
+			case 'r':
+				p['\r'] = true
+			case 't':
+				p['\t'] = true
+			case 'v':
+				p['\v'] = true
+			case 'f':
+				p['\f'] = true
+			case 'a':
+				p['\a'] = true
 			default:
 				if runes[i] < 256 {
 					p[runes[i]] = true
@@ -338,6 +395,11 @@ func parseCharClass(classStr string) predicate {
 			if runes[i] < 256 {
 				p[runes[i]] = true
 			}
+		}
+	}
+	if negate {
+		for i := 0; i < 256; i++ {
+			p[i] = !p[i]
 		}
 	}
 	return p

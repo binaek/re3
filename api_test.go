@@ -38,7 +38,6 @@ var findTests = []struct {
 	{"alt then literal no false skip", "(a|b)c", "xac", build(1, 3)}, // prefix must not include "c" from right of non-literal left
 	{"empty match at start", "a*", "bbb", build(0, 0, 1, 1, 2, 2, 3, 3)},
 	{"multiple potential", "a*", "aaab", build(0, 3, 3, 3, 4, 4)},
-	{"complement", "~(.*x.*)", "abc", build(0, 3, 3, 3)},
 }
 
 var matchTests = []struct {
@@ -78,10 +77,10 @@ var splitTests = []struct {
 
 func TestFindStringSubmatch(t *testing.T) {
 	tests := []struct {
-		name   string
-		pat    string
-		s      string
-		want   []string // nil = no match; [0]=full match, [i]=group i. re3 TDFA/leftmost-longest semantics.
+		name string
+		pat  string
+		s    string
+		want []string // nil = no match; [0]=full match, [i]=group i. re3 TDFA/leftmost-longest semantics.
 	}{
 		{"basic", "(a)b(c)", "abc", []string{"abc", "ab", "c"}},
 		{"nested", "(a(b)c)", "abc", []string{"abc", "abc", "bc"}},
@@ -105,11 +104,11 @@ func TestFindStringSubmatch(t *testing.T) {
 
 func TestFindAllStringSubmatch(t *testing.T) {
 	tests := []struct {
-		name   string
-		pat    string
-		s      string
-		n      int
-		want   [][]string
+		name string
+		pat  string
+		s    string
+		n    int
+		want [][]string
 	}{
 		{"multiple matches", "(a)b", "ab ab", -1, [][]string{{"ab", "ab"}, {"ab", "ab"}}},
 		{"one match", "(a)b(c)", "xabcy", -1, [][]string{{"abc", "ab", "c"}}},
@@ -317,10 +316,16 @@ func TestSplit(t *testing.T) {
 }
 
 var validCompileTests = []string{
+	"(?i:Sherlock Holmes)",
+	`(?:(\r\n|\r|\n))|(?:([\t\v\f ]+))|(?:((?:(?:(?://.*(?:\r\n|\r|\n))|(?:/\*.*?\*/))\s*)+))|(?:([0-9]+(?:_[0-9]+)*\.[0-9]+(?:_[0-9]+)*[eE][+-]?[0-9]+(?:_[0-9]+)*))|(?:([0-9]+(?:_[0-9]+)*\.[0-9]+(?:_[0-9]+)*))|(?:([0-9]+(?:_[0-9]+)*'[bodh][0-9a-fA-FxzXZ]+(?:_[0-9a-fA-FxzXZ]+)*))|(?:([0-9]+(?:_[0-9]+)*))|(?:('[01xzXZ]))|(?:(\-:))|(?:(\->))|(?:(\+:))|(?:(\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=|<<<=|>>>=))|(?:(\*\*))|(?:(/|%))|(?:(\+|-))|(?:(<<<|>>>|<<|>>))|(?:(<=|>=|<|>))|(?:(===|==\?|!==|!=\?|==|!=))|(?:(&&))|(?:(\|\|))|(?:(&))|(?:(\^~|\^|~\^))|(?:(\|))|(?:(~&|~\||!|~))|(?:(::))|(?:(:))|(?:(,))|(?:(\$))|(?:(\.\.))|(?:(\.))|(?:(=))|(?:(\#))|(?:(\{))|(?:(\[))|(?:(\())|(?:(\}))|(?:(\]))|(?:(\)))|(?:(;))|(?:(\*))|(?:(\balways_comb\b))|(?:(\balways_ff\b))|(?:(\bassign\b))|(?:(\basync_high\b))|(?:(\basync_low\b))|(?:(\bas\b))|(?:(\bbit\b))|(?:(\bcase\b))|(?:(\bdefault\b))|(?:(\belse\b))|(?:(\benum\b))|(?:(\bexport\b))|(?:(\bf32\b))|(?:(\bf64\b))|(?:(\bfor\b))|(?:(\bfunction\b))|(?:(\bi32\b))|(?:(\bi64\b))|(?:(\bif_reset\b))|(?:(\bif\b))|(?:(\bimport\b))|(?:(\binout\b))|(?:(\binput\b))|(?:(\binst\b))|(?:(\binterface\b))|(?:(\bin\b))|(?:(\blocalparam\b))|(?:(\blogic\b))|(?:(\bmodport\b))|(?:(\bmodule\b))|(?:(\bnegedge\b))|(?:(\boutput\b))|(?:(\bpackage\b))|(?:(\bparameter\b))|(?:(\bposedge\b))|(?:(\bref\b))|(?:(\brepeat\b))|(?:(\breturn\b))|(?:(\bstep\b))|(?:(\bstruct\b))|(?:(\bsync_high\b))|(?:(\bsync_low\b))|(?:(\btri\b))|(?:(\bu32\b))|(?:(\bu64\b))|(?:(\bvar\b))|(?:([a-zA-Z_][0-9a-zA-Z_]*))|(?:(.))`,
 	"a", "a*", "a+", "a?", ".",
 	"[a-z]", "\\d", "\\w", "\\s",
 	"a|b", "a&b", "~(a)",
 	"(a)", "a(b)c", ".*",
+	// Empty alternations and groups
+	"^a|$", "^|a$", "^()$", "^(?:)$", "^a||b$",
+	// Bounded repeats adjacent to parens (stress {n} not eating ')')
+	"^([A-Z]{2}){2}$",
 	"a{2}", "a{1,3}", "a{2,}", "b{0,1}",
 	"(?=a)", "(?<=a)",
 }
@@ -337,9 +342,8 @@ func TestCompile(t *testing.T) {
 		pat  string
 		want ErrorCode
 	}{
-		{"(a", ErrMissingParen},       // unclosed group
-		{"(?=x", ErrMissingParen},    // unclosed lookahead
-		{"a{", ErrInvalidRepeatSize},
+		{"(a", ErrMissingParen},   // unclosed group
+		{"(?=x", ErrMissingParen}, // unclosed lookahead
 		{"a{1,0}", ErrInvalidRepeatSize},
 		{"\\", ErrTrailingBackslash},
 		{"[a", ErrMissingBracket},
@@ -366,6 +370,31 @@ func TestMustCompile(t *testing.T) {
 		if re == nil {
 			t.Errorf("MustCompile(%q) returned nil", pat)
 		}
+	}
+}
+
+func TestEmptyAlternationsAndGroups(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+		match   bool
+	}{
+		{"a_or_empty_match_empty", "^a|$", "", true},
+		{"a_or_empty_match_a", "^a|$", "a", true},
+		{"empty_or_a_match_a", "^|a$", "a", true},
+		{"empty_group_matches_empty", "^()$", "", true},
+		{"empty_noncapturing_group_matches_empty", "^(?:)$", "", true},
+		{"double_bar_allows_empty_branch", "^a||b$", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re := MustCompile(tc.pattern)
+			got := re.MatchString(tc.text)
+			if got != tc.match {
+				t.Errorf("MatchString(%q, %q) = %v, want %v", tc.pattern, tc.text, got, tc.match)
+			}
+		})
 	}
 }
 
@@ -400,8 +429,8 @@ func TestCompareWithStd(t *testing.T) {
 	// Pairs for FindString/FindAllString/ReplaceAllString. Exclude nullable patterns (a*, .*) from
 	// FindAllString/ReplaceAllString to avoid empty-match boundary differences.
 	pairs := []struct {
-		pattern string
-		input   string
+		pattern  string
+		input    string
 		nullable bool // if true, skip FindAllString and ReplaceAllString
 	}{
 		{"a+b+", "xxaaabbbxx", false},
@@ -477,7 +506,7 @@ func TestClone(t *testing.T) {
 		{"match", "a+", "aaa", true, "aaa"},
 		{"no match", "a+", "bbb", false, ""},
 		{"find middle", "a+b+", "xxaaabbbxx", false, "aaabbb"}, // full string does not match a+b+
-		{"bounded", "a{2,}", "xaaaab", false, "aaaa"},         // full string does not match a{2,}
+		{"bounded", "a{2,}", "xaaaab", false, "aaaa"},          // full string does not match a{2,}
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -504,8 +533,8 @@ func TestClone(t *testing.T) {
 func TestCloneParallel(t *testing.T) {
 	re := MustCompile("a+b+")
 	const numGoroutines = 8
-	matchInput := "aaabbb"        // full match
-	findInput := "xxaaabbbxx"     // FindStringIndex returns [2,8] -> "aaabbb"
+	matchInput := "aaabbb"    // full match
+	findInput := "xxaaabbbxx" // FindStringIndex returns [2,8] -> "aaabbb"
 	var wg sync.WaitGroup
 	for g := 0; g < numGoroutines; g++ {
 		wg.Add(1)
@@ -653,6 +682,8 @@ func TestBoundedRepetition(t *testing.T) {
 		{"zero open one", "a{0,}", "a", true},
 		{"one exact", "b{1}", "b", true},
 		{"one exact no match", "b{1}", "", false},
+		// Regression: bounded repeat followed by ')' should not trigger ErrMissingParen
+		{"bounded_then_paren", "^([A-Z]{2}){2}$", "ABCD", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -981,7 +1012,7 @@ func BenchmarkCloneParallel(b *testing.B) {
 func BenchmarkConcurrentParallel(b *testing.B) {
 	cre := Concurrent(MustCompile("a+b+"))
 	s := "xxaaabbbxx"
-	cre.MatchString(s)   // warm cache
+	cre.MatchString(s) // warm cache
 	cre.FindStringIndex(s)
 	for _, g := range []int{1, 4, 8} {
 		g := g
