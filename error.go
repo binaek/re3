@@ -12,26 +12,25 @@ func (e *Error) Error() string {
 }
 
 // An ErrorCode describes a failure to parse a regular expression.
-// It mirrors regexp/syntax.ErrorCode.
 type ErrorCode string
 
 const (
-	ErrInternalError          ErrorCode = "regexp/syntax: internal error"
-	ErrInvalidCharClass       ErrorCode = "invalid character class"
-	ErrInvalidCharRange       ErrorCode = "invalid character class range"
-	ErrInvalidEscape          ErrorCode = "invalid escape sequence"
-	ErrInvalidNamedCapture    ErrorCode = "invalid named capture"
-	ErrInvalidPerlOp          ErrorCode = "invalid or unsupported Perl syntax"
-	ErrInvalidRepeatOp        ErrorCode = "invalid nested repetition operator"
-	ErrInvalidRepeatSize      ErrorCode = "invalid repeat count"
-	ErrInvalidUTF8            ErrorCode = "invalid UTF-8"
-	ErrMissingBracket         ErrorCode = "missing closing ]"
-	ErrMissingParen            ErrorCode = "missing closing )"
-	ErrMissingRepeatArgument  ErrorCode = "missing argument to repetition operator"
-	ErrTrailingBackslash      ErrorCode = "trailing backslash at end of expression"
-	ErrUnexpectedParen        ErrorCode = "unexpected )"
-	ErrNestingDepth           ErrorCode = "expression nests too deeply"
-	ErrLarge                  ErrorCode = "expression too large"
+	ErrInternalError         ErrorCode = "invalid or unsupported syntax"
+	ErrInvalidCharClass      ErrorCode = "invalid character class"
+	ErrInvalidCharRange      ErrorCode = "invalid character class range"
+	ErrInvalidEscape         ErrorCode = "invalid escape sequence"
+	ErrInvalidNamedCapture   ErrorCode = "invalid named capture"
+	ErrInvalidPerlOp         ErrorCode = "invalid or unsupported Perl syntax"
+	ErrInvalidRepeatOp       ErrorCode = "invalid nested repetition operator"
+	ErrInvalidRepeatSize     ErrorCode = "invalid repeat count"
+	ErrInvalidUTF8           ErrorCode = "invalid UTF-8"
+	ErrMissingBracket        ErrorCode = "missing closing ]"
+	ErrMissingParen          ErrorCode = "missing closing )"
+	ErrMissingRepeatArgument ErrorCode = "missing argument to repetition operator"
+	ErrTrailingBackslash     ErrorCode = "trailing backslash at end of expression"
+	ErrUnexpectedParen       ErrorCode = "unexpected )"
+	ErrNestingDepth          ErrorCode = "expression nests too deeply"
+	ErrLarge                 ErrorCode = "expression too large"
 )
 
 func (e ErrorCode) String() string {
