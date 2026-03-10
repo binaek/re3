@@ -105,6 +105,9 @@ if [ -d "$OUTDIR" ]; then
 fi
 mkdir -p "$OUTDIR"
 
+# Record start time for this run.
+START_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
 # Determine the `rebar` repository root and run all commands from there.
 if [ -z "$SEARCH_ROOT" ]; then
   # Default to a sibling "rebar" repo next to this "re3" repo.
@@ -133,18 +136,14 @@ else
   exit 1
 fi
 
-# Write manifest describing this run configuration.
+# Write initial manifest describing this run configuration.
 MANIFEST_PATH="${OUTDIR}/0a_manifest.csv"
 cat > "$MANIFEST_PATH" <<EOF
 key,value
-run_at_utc,$RUN_AT_UTC
+start_at_utc,$START_AT_UTC
 script_path,$SELF_PATH
-script_dir,$SELF_DIR
-outdir,$OUTDIR
 engines,$ENGINES
 bench_filter,${BENCH_FILTER:-}
-rebar_repo_root,$SEARCH_ROOT
-rebar_binary,$REBAR_CMD
 EOF
 
 # Get unique (name,model) pairs that have a go/re3 implementation.
@@ -158,11 +157,21 @@ if [ -z "$LIST" ]; then
   exit 0
 fi
 
+# Build the re3 engine, the regexp engine, and the rust/regex engine
+echo "Building re3 engine..."
+"$REBAR_CMD" build -e go/re3 || exit 1
+
+echo "Building regexp engine..."
+"$REBAR_CMD" build -e go/regexp || exit 1
+
 # Prepare manifests; rows are appended after each benchmark runs.
 BENCHMARKS_MANIFEST="${OUTDIR}/0b_benchmarks.csv"
-echo "name,model,output_file" > "$BENCHMARKS_MANIFEST"
+echo "name,model,output_file,start_utc,end_utc" > "$BENCHMARKS_MANIFEST"
 ALL_RESULTS="${OUTDIR}/0c_all_results.csv"
 ALL_HEADER_WRITTEN=0
+
+# Generate a report summarizing the run.
+REPORT_PATH="${OUTDIR}/0d_report.md"
 
 printf '%s\n' "$LIST" | while IFS=, read -r name model; do
   id="${name},${model}"
@@ -173,14 +182,19 @@ printf '%s\n' "$LIST" | while IFS=, read -r name model; do
   echo "--------------------------------"
   echo "Running ${id} -> ${outfile}"
 
+  # Record start time for this run.
+  bench_start_at_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
   # Run only benchmarks for this name, then filter by exact (name,model)
   # to isolate a single benchmark definition in the output.
   "$REBAR_CMD" measure -e "$ENGINES" -f "^${name}" \
     | awk -F',' -v n="$name" -v m="$model" 'NR==1 || ($1 == n && $2 == m)' \
     | tee "$outfile"
 
+  bench_end_at_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
   # Only once the benchmark has completed do we record it in the manifests.
-  echo "$name,$model,$outfile" >> "$BENCHMARKS_MANIFEST"
+  echo "$name,$model,$outfile,$bench_start_at_utc,$bench_end_at_utc" >> "$BENCHMARKS_MANIFEST"
 
   # Append into the "all results" CSV incrementally.
   if [ "$ALL_HEADER_WRITTEN" -eq 0 ]; then
@@ -192,3 +206,16 @@ printf '%s\n' "$LIST" | while IFS=, read -r name model; do
     tail -n +2 "$outfile" >> "$ALL_RESULTS"
   fi
 done
+
+# Record end time for this run.
+END_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+{
+  echo "end_at_utc,$END_AT_UTC"
+} >> "$MANIFEST_PATH"
+
+echo "Generating report..."
+"$REBAR_CMD" report "$ALL_RESULTS" > "$REPORT_PATH"
+
+echo "Report generated at: $REPORT_PATH"
+
+echo "Done."
