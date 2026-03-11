@@ -114,8 +114,25 @@ func stepTDFA(n node, c rune) []tdfaConfig {
 			result = append(result, tdfaConfig{NextNode: next, Tags: cc.Tags})
 		}
 		if nd.Child.Nullable() && nd.Max > 0 {
-			skipConfigs := stepTDFA(nextRepeat, c)
-			result = append(result, skipConfigs...)
+			currentMin := nextMin
+			currentMax := nextMax
+			for currentMax > 0 {
+				currentMin--
+				if currentMin < 0 {
+					currentMin = 0
+				}
+				currentMax--
+				peeled := newRepeatNode(nd.Child, currentMin, currentMax)
+				for _, cc := range childConfigs {
+					var next node
+					if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
+						next = peeled
+					} else {
+						next = newConcatNode(cc.NextNode, peeled)
+					}
+					result = append(result, tdfaConfig{NextNode: next, Tags: cc.Tags})
+				}
+			}
 		}
 		return result
 	case *lookAheadNode:
