@@ -272,6 +272,67 @@ func (n *starNode) Equals(other node) bool {
 func (n *starNode) Reverse() node  { return &starNode{Child: n.Child.Reverse()} }
 func (n *starNode) String() string { return fmt.Sprintf("Star(%s)", n.Child.String()) }
 
+// repeatNode is A{min,max}; bounds are inclusive, max >= 0. For A{n,} we use Concat(Repeat(A,n,n), Star(A)).
+type repeatNode struct {
+	Child node
+	Min   int
+	Max   int
+}
+
+func newRepeatNode(child node, min, max int) node {
+	if max == 0 {
+		return &emptyNode{}
+	}
+	if min == 1 && max == 1 {
+		return child
+	}
+	if _, isFalse := child.(*falseNode); isFalse {
+		if min == 0 {
+			return &emptyNode{}
+		}
+		return &falseNode{}
+	}
+	if _, isEmpty := child.(*emptyNode); isEmpty {
+		return &emptyNode{}
+	}
+	return &repeatNode{Child: child, Min: min, Max: max}
+}
+
+func (n *repeatNode) String() string {
+	return fmt.Sprintf("Repeat(%s, %d, %d)", n.Child, n.Min, n.Max)
+}
+
+func (n *repeatNode) Nullable() bool {
+	return n.Min == 0 || n.Child.Nullable()
+}
+
+func (n *repeatNode) Derivative(char rune) node {
+	if n.Max == 0 {
+		return &falseNode{}
+	}
+	nextMin := n.Min - 1
+	if nextMin < 0 {
+		nextMin = 0
+	}
+	nextMax := n.Max - 1
+	nextRepeat := newRepeatNode(n.Child, nextMin, nextMax)
+	derivChild := n.Child.Derivative(char)
+	res := newConcatNode(derivChild, nextRepeat)
+	if n.Child.Nullable() && n.Max > 0 {
+		res = newUnionNode(res, nextRepeat.Derivative(char))
+	}
+	return res
+}
+
+func (n *repeatNode) Equals(other node) bool {
+	o, ok := other.(*repeatNode)
+	return ok && n.Min == o.Min && n.Max == o.Max && n.Child.Equals(o.Child)
+}
+
+func (n *repeatNode) Reverse() node {
+	return newRepeatNode(n.Child.Reverse(), n.Min, n.Max)
+}
+
 type groupNode struct {
 	GroupID int
 	Child   node
