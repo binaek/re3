@@ -213,15 +213,24 @@ func (p *parser) parseBoundedRepeat(left node) (node, error) {
 	if p.curToken.Type == tokenComma {
 		p.nextToken() // curToken is now number or '}'
 		if p.curToken.Type == tokenRBrace {
-			return desugarRepeatMinLeft(left, n), nil
+			// e.g. {n,} -> Repeat exact `n` times, followed by a Star
+			if n == 0 {
+				return &starNode{Child: left}, nil
+			}
+			return newConcatNode(newRepeatNode(left, n, n), &starNode{Child: left}), nil
 		}
+
 		m, _ := strconv.Atoi(p.curToken.Text)
 		p.nextToken() // curToken is now '}'
-		return desugarRepeatMinMax(left, n, m, p.expr)
+
+		if n > m {
+			return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
+		}
+		return newRepeatNode(left, n, m), nil
 	}
 
-	// Do NOT advance past '}' here; leave it for the caller.
-	return desugarRepeatExact(left, n), nil
+	// Exact repeat {n}
+	return newRepeatNode(left, n, n), nil
 }
 
 func (p *parser) parseEmptyLeftUnion() (node, error) {
@@ -234,39 +243,6 @@ func (p *parser) parseEmptyLeftUnion() (node, error) {
 		return nil, err
 	}
 	return newUnionNode(&emptyNode{}, right), nil
-}
-
-func desugarRepeatExact(child node, n int) node {
-	if n == 0 {
-		return &emptyNode{}
-	}
-	out := child
-	for i := 1; i < n; i++ {
-		out = newConcatNode(out, child)
-	}
-	return out
-}
-
-func desugarRepeatMinLeft(child node, n int) node {
-	if n == 0 {
-		return &starNode{Child: child}
-	}
-	out := desugarRepeatExact(child, n)
-	return newConcatNode(out, &starNode{Child: child})
-}
-
-func desugarRepeatMinMax(child node, n, m int, expr string) (node, error) {
-	if n > m {
-		return nil, &Error{Code: ErrInvalidRepeatSize, Expr: expr}
-	}
-	if n == 0 && m == 0 {
-		return &emptyNode{}, nil
-	}
-	out := desugarRepeatExact(child, n)
-	for i := 0; i < m-n; i++ {
-		out = newConcatNode(out, newUnionNode(child, &emptyNode{}))
-	}
-	return out, nil
 }
 
 func (p *parser) isPeekStartOfExpression() bool {
