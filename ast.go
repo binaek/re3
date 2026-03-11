@@ -2,7 +2,6 @@ package re3
 
 import (
 	"fmt"
-	"sort"
 )
 
 type node interface {
@@ -81,53 +80,17 @@ func (n *charClassNode) String() string { return fmt.Sprintf("Class(%s)", n.Clas
 
 type unionNode struct{ Left, Right node }
 
-func flattenUnion(n node) []node {
-	if u, ok := n.(*unionNode); ok {
-		return append(flattenUnion(u.Left), flattenUnion(u.Right)...)
-	}
-	if _, ok := n.(*falseNode); ok {
-		return nil // Drop False nodes instantly
-	}
-	return []node{n}
-}
-
 func newUnionNode(left, right node) node {
-	// 1. Flatten the entire nested structure into a slice
-	nodes := append(flattenUnion(left), flattenUnion(right)...)
-	if len(nodes) == 0 {
-		return &falseNode{}
+	if _, ok := left.(*falseNode); ok {
+		return right
 	}
-
-	// 2. Deduplicate mathematically identical states
-	var unique []node
-	for _, n := range nodes {
-		exists := false
-		for _, u := range unique {
-			if n.Equals(u) {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			unique = append(unique, n)
-		}
+	if _, ok := right.(*falseNode); ok {
+		return left
 	}
-
-	if len(unique) == 1 {
-		return unique[0]
+	if left.Equals(right) {
+		return left
 	}
-
-	// 3. Sort them to guarantee A|B is structurally identical to B|A
-	sort.Slice(unique, func(i, j int) bool {
-		return unique[i].String() < unique[j].String()
-	})
-
-	// 4. Rebuild as a strictly right-heavy tree
-	res := unique[len(unique)-1]
-	for i := len(unique) - 2; i >= 0; i-- {
-		res = &unionNode{Left: unique[i], Right: res}
-	}
-	return res
+	return &unionNode{Left: left, Right: right}
 }
 
 func (n *unionNode) Nullable() bool { return n.Left.Nullable() || n.Right.Nullable() }
@@ -145,13 +108,6 @@ func (n *unionNode) String() string {
 
 type intersectNode struct{ Left, Right node }
 
-func flattenIntersect(n node) []node {
-	if i, ok := n.(*intersectNode); ok {
-		return append(flattenIntersect(i.Left), flattenIntersect(i.Right)...)
-	}
-	return []node{n}
-}
-
 func newIntersectNode(left, right node) node {
 	if _, ok := left.(*falseNode); ok {
 		return &falseNode{}
@@ -159,39 +115,10 @@ func newIntersectNode(left, right node) node {
 	if _, ok := right.(*falseNode); ok {
 		return &falseNode{}
 	}
-
-	nodes := append(flattenIntersect(left), flattenIntersect(right)...)
-
-	var unique []node
-	for _, n := range nodes {
-		if _, ok := n.(*falseNode); ok {
-			return &falseNode{}
-		} // A & False = False
-		exists := false
-		for _, u := range unique {
-			if n.Equals(u) {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			unique = append(unique, n)
-		}
+	if left.Equals(right) {
+		return left
 	}
-
-	if len(unique) == 1 {
-		return unique[0]
-	}
-
-	sort.Slice(unique, func(i, j int) bool {
-		return unique[i].String() < unique[j].String()
-	})
-
-	res := unique[len(unique)-1]
-	for i := len(unique) - 2; i >= 0; i-- {
-		res = &intersectNode{Left: unique[i], Right: res}
-	}
-	return res
+	return &intersectNode{Left: left, Right: right}
 }
 
 func (n *intersectNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
@@ -310,16 +237,41 @@ func (n *repeatNode) Derivative(char rune) node {
 	if n.Max == 0 {
 		return &falseNode{}
 	}
+
 	nextMin := n.Min - 1
 	if nextMin < 0 {
 		nextMin = 0
 	}
 	nextMax := n.Max - 1
+
 	nextRepeat := newRepeatNode(n.Child, nextMin, nextMax)
 	derivChild := n.Child.Derivative(char)
-	res := newConcatNode(derivChild, nextRepeat)
-	if n.Child.Nullable() && n.Max > 0 {
-		res = newUnionNode(res, nextRepeat.Derivative(char))
+
+	if !n.Child.Nullable() {
+		return newConcatNode(derivChild, nextRepeat)
+	}
+
+	// Iteratively unroll nullable repeats to avoid recursive derivation explosion.
+	unionTree := make([]node, 0, nextMax+1)
+	unionTree = append(unionTree, newConcatNode(derivChild, nextRepeat))
+
+	currentMin := nextMin
+	currentMax := nextMax
+	for currentMax > 0 {
+		currentMin--
+		if currentMin < 0 {
+			currentMin = 0
+		}
+		currentMax--
+		unionTree = append(unionTree, newConcatNode(derivChild, newRepeatNode(n.Child, currentMin, currentMax)))
+	}
+
+	if len(unionTree) == 1 {
+		return unionTree[0]
+	}
+	res := unionTree[len(unionTree)-1]
+	for i := len(unionTree) - 2; i >= 0; i-- {
+		res = newUnionNode(unionTree[i], res)
 	}
 	return res
 }
