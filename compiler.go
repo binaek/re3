@@ -211,7 +211,17 @@ func isExactLiteral(n node) bool {
 // --- MINTERM COMPRESSION LOGIC ---
 
 func buildMintermTable(ast node) *mintermTable {
-	preds := extractPredicates(ast)
+	rawPreds := extractPredicates(ast)
+
+	// Deduplicate predicates to prevent O(P * 256) timeout on large dictionaries.
+	seen := make(map[predicate]bool)
+	var preds []predicate
+	for _, p := range rawPreds {
+		if !seen[p] {
+			seen[p] = true
+			preds = append(preds, p)
+		}
+	}
 
 	var initialClass []byte
 	for i := 0; i < 256; i++ {
@@ -261,47 +271,50 @@ func buildMintermTable(ast node) *mintermTable {
 
 func extractPredicates(n node) []predicate {
 	var preds []predicate
+	extractPredicatesRec(n, &preds)
+	return preds
+}
 
+func extractPredicatesRec(n node, preds *[]predicate) {
 	switch node := n.(type) {
 	case *literalNode:
 		var p predicate
 		if node.Value < 256 {
 			p[node.Value] = true
 		}
-		preds = append(preds, p)
+		*preds = append(*preds, p)
 	case *charClassNode:
-		preds = append(preds, parseCharClass(node.Class))
+		*preds = append(*preds, parseCharClass(node.Class))
 	case *concatNode:
-		preds = append(preds, extractPredicates(node.Left)...)
-		preds = append(preds, extractPredicates(node.Right)...)
+		extractPredicatesRec(node.Left, preds)
+		extractPredicatesRec(node.Right, preds)
 	case *unionNode:
-		preds = append(preds, extractPredicates(node.Left)...)
-		preds = append(preds, extractPredicates(node.Right)...)
+		extractPredicatesRec(node.Left, preds)
+		extractPredicatesRec(node.Right, preds)
 	case *intersectNode:
-		preds = append(preds, extractPredicates(node.Left)...)
-		preds = append(preds, extractPredicates(node.Right)...)
+		extractPredicatesRec(node.Left, preds)
+		extractPredicatesRec(node.Right, preds)
 	case *complementNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *starNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *repeatNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *groupNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *lookAheadNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *lookBehindNode:
-		preds = append(preds, extractPredicates(node.Child)...)
+		extractPredicatesRec(node.Child, preds)
 	case *tagNode:
+		// No predicates from tag nodes.
 	case *anyNode:
-		// Dot does not match newline; ensure \n gets its own minterm class so Derivative('\n') is used.
 		var p predicate
 		for i := 0; i < 256; i++ {
 			p[i] = (byte(i) != '\n')
 		}
-		preds = append(preds, p)
+		*preds = append(*preds, p)
 	}
-	return preds
 }
 
 func parseCharClass(classStr string) predicate {
