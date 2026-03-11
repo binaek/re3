@@ -38,9 +38,8 @@ OPTIONS
       Env: ENGINES
 
   -f, --filter REGEX
-      Only run benchmarks whose "name,model" matches REGEX (grep -E syntax).
-      Example: --filter '^test/model'
-      Env: BENCH_FILTER
+      Pass through to rebar to filter which benchmarks are listed/run.
+      Env: FILTER
 
   --rebar DIR
       Path to the `rebar` repository root (its working directory).
@@ -60,7 +59,7 @@ EOF
 DEFAULT_OUTDIR="${SELF_DIR}/../benchmarks/$(date -u +'%Y/%m/%d/%H/%M')"
 RUN_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 OUTDIR="${OUTDIR:-$DEFAULT_OUTDIR}"
-BENCH_FILTER="${BENCH_FILTER:-}"
+FILTER="${FILTER:-}"
 ENGINES="${ENGINES:-go/regexp|go/re3}"
 SEARCH_ROOT="${REBAR:-}"
 
@@ -77,7 +76,7 @@ while [ "${1:-}" != "" ]; do
       ENGINES="${2:-}"; shift 2
       ;;
     -f|--filter)
-      BENCH_FILTER="${2:-}"; shift 2
+      FILTER="${2:-}"; shift 2
       ;;
     --rebar)
       SEARCH_ROOT="${2:-}"; shift 2
@@ -143,19 +142,8 @@ key,value
 start_at_utc,$START_AT_UTC
 script_path,$SELF_PATH
 engines,$ENGINES
-bench_filter,${BENCH_FILTER:-}
+filter,${FILTER:-}
 EOF
-
-# Get unique (name,model) pairs that have a go/re3 implementation.
-LIST="$("$REBAR_CMD" measure --list | grep 'go/re3' | cut -d',' -f1-2 | sort -u)"
-if [ -n "$BENCH_FILTER" ]; then
-  LIST="$(printf '%s\n' "$LIST" | grep -E "$BENCH_FILTER" || true)"
-fi
-
-if [ -z "$LIST" ]; then
-  echo "No benchmarks matched filter '\$BENCH_FILTER'. Nothing to do." >&2
-  exit 0
-fi
 
 # Build the re3 engine, the regexp engine, and the rust/regex engine
 echo "Building re3 engine..."
@@ -164,48 +152,12 @@ echo "Building re3 engine..."
 echo "Building regexp engine..."
 "$REBAR_CMD" build -e go/regexp || exit 1
 
-# Prepare manifests; rows are appended after each benchmark runs.
-BENCHMARKS_MANIFEST="${OUTDIR}/0b_benchmarks.csv"
-echo "name,model,output_file,start_utc,end_utc" > "$BENCHMARKS_MANIFEST"
-ALL_RESULTS="${OUTDIR}/0c_all_results.csv"
-ALL_HEADER_WRITTEN=0
+# Run all benchmarks in one go; FILTER and ENGINES are passed through to rebar.
+ALL_RESULTS="${OUTDIR}/0b_all_results.csv"
+REPORT_PATH="${OUTDIR}/0c_report.md"
 
-# Generate a report summarizing the run.
-REPORT_PATH="${OUTDIR}/0d_report.md"
-
-printf '%s\n' "$LIST" | while IFS=, read -r name model; do
-  id="${name},${model}"
-  # Make a filesystem‑safe filename from name+model.
-  safe_name="${name//\//__}__${model}"
-  outfile="${OUTDIR}/${safe_name}.csv"
-
-  echo "--------------------------------"
-  echo "Running ${id} -> ${outfile}"
-
-  # Record start time for this run.
-  bench_start_at_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
-  # Run only benchmarks for this name, then filter by exact (name,model)
-  # to isolate a single benchmark definition in the output.
-  "$REBAR_CMD" measure -e "$ENGINES" -f "^${name}" \
-    | awk -F',' -v n="$name" -v m="$model" 'NR==1 || ($1 == n && $2 == m)' \
-    | tee "$outfile"
-
-  bench_end_at_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
-  # Only once the benchmark has completed do we record it in the manifests.
-  echo "$name,$model,$outfile,$bench_start_at_utc,$bench_end_at_utc" >> "$BENCHMARKS_MANIFEST"
-
-  # Append into the "all results" CSV incrementally.
-  if [ "$ALL_HEADER_WRITTEN" -eq 0 ]; then
-    # First benchmark: copy its file as-is, including header.
-    cat "$outfile" > "$ALL_RESULTS"
-    ALL_HEADER_WRITTEN=1
-  else
-    # Subsequent benchmarks: append without header.
-    tail -n +2 "$outfile" >> "$ALL_RESULTS"
-  fi
-done
+echo "Running benchmarks..."
+"$REBAR_CMD" measure -e "$ENGINES" ${FILTER:+ -f "$FILTER"} | tee "$ALL_RESULTS"
 
 # Record end time for this run.
 END_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -214,8 +166,24 @@ END_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 } >> "$MANIFEST_PATH"
 
 echo "Generating report..."
+
 "$REBAR_CMD" report "$ALL_RESULTS" > "$REPORT_PATH"
 
 echo "Report generated at: $REPORT_PATH"
 
 echo "Done."
+
+# timeout filter: '^(curated|dictionary).*|dictionary/search/english-15$'
+# timeout regex: 
+#   Regex that will return only the following list:
+#        '(curated/03-date/ascii|curated/12-dictionary/compile-single|curated/12-dictionary/single|dictionary/compile/english-10|dictionary/compile/english-15|dictionary/search/english-15)'
+#   curated/03-date/ascii
+#   curated/12-dictionary/compile-single
+#   curated/12-dictionary/single
+#   dictionary/compile/english-10
+#   dictionary/compile/english-15
+#   dictionary/search/english-15
+
+
+
+
