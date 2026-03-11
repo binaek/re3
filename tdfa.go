@@ -92,6 +92,32 @@ func stepTDFA(n node, c rune) []tdfaConfig {
 		return result
 	case *groupNode:
 		return stepTDFA(nd.Child, c)
+	case *repeatNode:
+		if nd.Max == 0 {
+			return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		}
+		nextMin := nd.Min - 1
+		if nextMin < 0 {
+			nextMin = 0
+		}
+		nextMax := nd.Max - 1
+		nextRepeat := newRepeatNode(nd.Child, nextMin, nextMax)
+		childConfigs := stepTDFA(nd.Child, c)
+		var result []tdfaConfig
+		for _, cc := range childConfigs {
+			var next node
+			if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
+				next = nextRepeat
+			} else {
+				next = newConcatNode(cc.NextNode, nextRepeat)
+			}
+			result = append(result, tdfaConfig{NextNode: next, Tags: cc.Tags})
+		}
+		if nd.Child.Nullable() && nd.Max > 0 {
+			skipConfigs := stepTDFA(nextRepeat, c)
+			result = append(result, skipConfigs...)
+		}
+		return result
 	case *lookAheadNode:
 		childConfigs := stepTDFA(nd.Child, c)
 		var result []tdfaConfig
@@ -166,6 +192,8 @@ func injectCaptureTags(ast node) node {
 		}
 	case *starNode:
 		return &starNode{Child: injectCaptureTags(n.Child)}
+	case *repeatNode:
+		return newRepeatNode(injectCaptureTags(n.Child), n.Min, n.Max)
 	case *intersectNode:
 		return &intersectNode{
 			Left:  injectCaptureTags(n.Left),
@@ -199,6 +227,8 @@ func countCaptureGroups(ast node) int {
 			walk(n.Left)
 			walk(n.Right)
 		case *starNode:
+			walk(n.Child)
+		case *repeatNode:
 			walk(n.Child)
 		case *intersectNode:
 			walk(n.Left)
