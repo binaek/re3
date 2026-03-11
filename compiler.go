@@ -180,6 +180,11 @@ func extractLiteralPrefix(n node) string {
 		return left
 	case *groupNode:
 		return extractLiteralPrefix(nd.Child)
+	case *repeatNode:
+		if nd.Min > 0 {
+			return extractLiteralPrefix(nd.Child)
+		}
+		return ""
 	case *starNode, *unionNode, *anyNode, *falseNode, *emptyNode,
 		*charClassNode, *lookAheadNode, *lookBehindNode, *tagNode,
 		*complementNode, *intersectNode:
@@ -196,6 +201,8 @@ func isExactLiteral(n node) bool {
 		return true
 	case *concatNode:
 		return isExactLiteral(nd.Left) && isExactLiteral(nd.Right)
+	case *repeatNode:
+		return false // Safest to disable deep-chaining SIMD across repeats for now
 	default:
 		return false
 	}
@@ -276,6 +283,8 @@ func extractPredicates(n node) []predicate {
 	case *complementNode:
 		preds = append(preds, extractPredicates(node.Child)...)
 	case *starNode:
+		preds = append(preds, extractPredicates(node.Child)...)
+	case *repeatNode:
 		preds = append(preds, extractPredicates(node.Child)...)
 	case *groupNode:
 		preds = append(preds, extractPredicates(node.Child)...)
