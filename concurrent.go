@@ -6,6 +6,28 @@ import (
 	"unicode/utf8"
 )
 
+func advancePosAfterEmptyMatchStringConcurrent(s string, pos int) int {
+	if pos >= len(s) {
+		return pos + 1
+	}
+	_, size := utf8.DecodeRuneInString(s[pos:])
+	if size <= 0 {
+		return pos + 1
+	}
+	return pos + size
+}
+
+func advancePosAfterEmptyMatchBytesConcurrent(b []byte, pos int) int {
+	if pos >= len(b) {
+		return pos + 1
+	}
+	_, size := utf8.DecodeRune(b[pos:])
+	if size <= 0 {
+		return pos + 1
+	}
+	return pos + size
+}
+
 // concurrentRegExpImpl is a thread-safe wrapper that implements RegExp.
 type concurrentRegExpImpl struct {
 	mu sync.RWMutex
@@ -16,18 +38,30 @@ type concurrentRegExpImpl struct {
 
 func (c *concurrentRegExpImpl) Match(b []byte) bool {
 	c.mu.RLock()
+	if c.re.stdlib != nil {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		result := c.re.Match(b)
+		c.mu.Unlock()
+		return result
+	}
+	if c.re.hasAssertions {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		result := c.re.Match(b)
+		c.mu.Unlock()
+		return result
+	}
 	state := 0
 	cacheMiss := false
-	for pos := 0; pos < len(b); {
-		r, size := utf8.DecodeRune(b[pos:])
-		mintermID := c.re.minterms.runeToClass(r)
-		next, ok := c.re.forward.getNextStateCached(state, mintermID)
+	for pos := 0; pos < len(b); pos++ {
+		mintermID := c.re.minterms.ByteToClass[b[pos]]
+		next, ok := c.re.forward.getNextStateCached(state, mintermID, matchContext{})
 		if !ok {
 			cacheMiss = true
 			break
 		}
 		state = next
-		pos += size
 	}
 	if cacheMiss {
 		c.mu.RUnlock()
@@ -43,18 +77,30 @@ func (c *concurrentRegExpImpl) Match(b []byte) bool {
 
 func (c *concurrentRegExpImpl) MatchString(s string) bool {
 	c.mu.RLock()
+	if c.re.stdlib != nil {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		result := c.re.MatchString(s)
+		c.mu.Unlock()
+		return result
+	}
+	if c.re.hasAssertions {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		result := c.re.MatchString(s)
+		c.mu.Unlock()
+		return result
+	}
 	state := 0
 	cacheMiss := false
-	for pos := 0; pos < len(s); {
-		r, size := utf8.DecodeRuneInString(s[pos:])
-		mintermID := c.re.minterms.runeToClass(r)
-		next, ok := c.re.forward.getNextStateCached(state, mintermID)
+	for pos := 0; pos < len(s); pos++ {
+		mintermID := c.re.minterms.ByteToClass[s[pos]]
+		next, ok := c.re.forward.getNextStateCached(state, mintermID, matchContext{})
 		if !ok {
 			cacheMiss = true
 			break
 		}
 		state = next
-		pos += size
 	}
 	if cacheMiss {
 		c.mu.RUnlock()
@@ -86,10 +132,23 @@ func (c *concurrentRegExpImpl) FindStringIndex(s string) []int {
 	return loc
 }
 
+func (c *concurrentRegExpImpl) findStringIndexFrom(s string, from int) []int {
+	c.mu.Lock()
+	loc := c.re.findStringIndexFrom(s, from)
+	c.mu.Unlock()
+	return loc
+}
+
 // findStringIndexCached runs the 3-phase FindStringIndex using only getNextStateCached.
 // Returns (result, false) on success, (nil, true) on cache miss.
 func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	re := c.re
+	if re.stdlib != nil {
+		return nil, true
+	}
+	if re.hasAssertions {
+		return nil, true
+	}
 	if len(s) == 0 {
 		if re.forward.isAccepting(0) {
 			return []int{0, 0}, false
@@ -110,18 +169,20 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	}
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
-		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.runeToClass(r)
-		next, ok := re.unanchored.getNextStateCached(state, mintermID)
+		mintermID := re.minterms.ByteToClass[s[bytePos]]
+		next, ok := re.unanchored.getNextStateCached(state, mintermID, matchContext{})
 		if !ok {
 			return nil, true
 		}
 		state = next
 		if re.unanchored.isAccepting(state) {
-			firstEnd = bytePos + size
+			firstEnd = bytePos + 1
 			break
 		}
-		bytePos += size
+		if state == re.unanchored.deadStateID {
+			break
+		}
+		bytePos++
 	}
 	if firstEnd == -1 {
 		return nil, false
@@ -130,10 +191,9 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	leftmostStart := -1
 	bytePos = firstEnd
 	for bytePos > 0 {
-		r, size := utf8.DecodeLastRuneInString(s[:bytePos])
-		bytePos -= size
-		mintermID := re.minterms.runeToClass(r)
-		next, ok := re.reverse.getNextStateCached(revState, mintermID)
+		bytePos--
+		mintermID := re.minterms.ByteToClass[s[bytePos]]
+		next, ok := re.reverse.getNextStateCached(revState, mintermID, matchContext{})
 		if !ok {
 			return nil, true
 		}
@@ -155,33 +215,19 @@ func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	}
 	bytePos = leftmostStart
 	for bytePos < len(s) {
-		r, size := utf8.DecodeRuneInString(s[bytePos:])
-		mintermID := re.minterms.runeToClass(r)
-		next, ok := re.forward.getNextStateCached(fwdState, mintermID)
+		mintermID := re.minterms.ByteToClass[s[bytePos]]
+		next, ok := re.forward.getNextStateCached(fwdState, mintermID, matchContext{})
 		if !ok {
 			return nil, true
 		}
 		fwdState = next
 		if re.forward.isAccepting(fwdState) {
-			longestEnd = bytePos + size
+			longestEnd = bytePos + 1
 		}
-		isDead := !re.forward.isAccepting(fwdState)
-		if isDead {
-			for m := 0; m < re.minterms.NumClasses; m++ {
-				next, ok := re.forward.getNextStateCached(fwdState, m)
-				if !ok {
-					return nil, true
-				}
-				if next != fwdState {
-					isDead = false
-					break
-				}
-			}
-		}
-		if isDead {
+		if fwdState == re.forward.deadStateID {
 			break
 		}
-		bytePos += size
+		bytePos++
 	}
 	return []int{leftmostStart, longestEnd}, false
 }
@@ -219,15 +265,19 @@ func (c *concurrentRegExpImpl) FindAllString(s string, n int) []string {
 	var matches []string
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(matches) < n) {
-		loc := c.FindStringIndex(s[pos:])
+		loc := c.findStringIndexFrom(s, pos)
 		if loc == nil {
 			break
 		}
-		start := pos + loc[0]
-		end := pos + loc[1]
+		start := loc[0]
+		end := loc[1]
 		matches = append(matches, s[start:end])
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -243,15 +293,19 @@ func (c *concurrentRegExpImpl) FindAllStringIndex(s string, n int) [][]int {
 	var matches [][]int
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(matches) < n) {
-		loc := c.FindStringIndex(s[pos:])
+		loc := c.findStringIndexFrom(s, pos)
 		if loc == nil {
 			break
 		}
-		start := pos + loc[0]
-		end := pos + loc[1]
+		start := loc[0]
+		end := loc[1]
 		matches = append(matches, []int{start, end})
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -365,7 +419,11 @@ func (c *concurrentRegExpImpl) findAllStringSubmatchCached(s string, n int) ([][
 		end := pos + loc[1]
 		out = append(out, []string{s[start:end]})
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -448,7 +506,11 @@ func (c *concurrentRegExpImpl) findAllStringSubmatchIndexCached(s string, n int)
 		end := pos + loc[1]
 		out = append(out, []int{start, end})
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -471,13 +533,13 @@ func (c *concurrentRegExpImpl) Split(s string, n int) []string {
 	splits := 0
 	maxSplits := n - 1
 	for pos <= len(s) {
-		loc := c.FindStringIndex(s[pos:])
+		loc := c.findStringIndexFrom(s, pos)
 		if loc == nil {
 			result = append(result, s[pos:])
 			break
 		}
-		start := pos + loc[0]
-		end := pos + loc[1]
+		start := loc[0]
+		end := loc[1]
 		result = append(result, s[pos:start])
 		splits++
 		if n > 0 && splits >= maxSplits {
@@ -485,7 +547,11 @@ func (c *concurrentRegExpImpl) Split(s string, n int) []string {
 			break
 		}
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -507,7 +573,11 @@ func (c *concurrentRegExpImpl) ReplaceAll(src, repl []byte) []byte {
 		buf = append(buf, src[pos:start]...)
 		buf = append(buf, repl...)
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchBytesConcurrent(src, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}
@@ -519,17 +589,21 @@ func (c *concurrentRegExpImpl) ReplaceAllString(s, repl string) string {
 	var buf []byte
 	pos := 0
 	for pos <= len(s) {
-		loc := c.FindStringIndex(s[pos:])
+		loc := c.findStringIndexFrom(s, pos)
 		if loc == nil {
 			buf = append(buf, s[pos:]...)
 			break
 		}
-		start := pos + loc[0]
-		end := pos + loc[1]
+		start := loc[0]
+		end := loc[1]
 		buf = append(buf, s[pos:start]...)
 		buf = append(buf, repl...)
 		if end == start {
-			pos++
+			nextPos := advancePosAfterEmptyMatchStringConcurrent(s, start)
+			if nextPos <= pos {
+				nextPos = pos + 1
+			}
+			pos = nextPos
 		} else {
 			pos = end
 		}

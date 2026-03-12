@@ -26,6 +26,13 @@ const (
 	tokenNonCapParen // (?:
 	tokenInlineFlags // (?i)
 	tokenEmpty       // zero-width anchors
+	tokenStart
+	tokenEnd
+	tokenWordBoundary
+	tokenNotWordBoundary
+	tokenBeginText
+	tokenEndText
+	tokenEndTextOptionalNewline
 )
 
 type token struct {
@@ -79,9 +86,12 @@ func (l *lexer) nextToken() token {
 		}
 		l.lastType = tokenQuestion
 		return token{Type: tokenQuestion}
-	case '^', '$':
-		l.lastType = tokenEmpty
-		return token{Type: tokenEmpty}
+	case '^':
+		l.lastType = tokenStart
+		return token{Type: tokenStart}
+	case '$':
+		l.lastType = tokenEnd
+		return token{Type: tokenEnd}
 	case '(':
 		if l.pos < len(l.input) && l.input[l.pos] == '?' {
 			start := l.pos - 1
@@ -120,18 +130,21 @@ func (l *lexer) nextToken() token {
 			}
 			// Inline Flags (?i) or (?s:...)
 			tempPos := l.pos
+			flagsStart := l.pos
 			isFlags := true
 			for tempPos < len(l.input) {
 				c := l.input[tempPos]
 				if c == ':' {
+					flags := string(l.input[flagsStart:tempPos])
 					l.pos = tempPos + 1
 					l.lastType = tokenNonCapParen
-					return token{Type: tokenNonCapParen}
+					return token{Type: tokenNonCapParen, Text: flags}
 				}
 				if c == ')' {
+					flags := string(l.input[flagsStart:tempPos])
 					l.pos = tempPos + 1
 					l.lastType = tokenInlineFlags
-					return token{Type: tokenInlineFlags}
+					return token{Type: tokenInlineFlags, Text: flags}
 				}
 				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' {
 					tempPos++
@@ -193,9 +206,25 @@ func (l *lexer) nextToken() token {
 		}
 		escaped := l.input[l.pos]
 		l.pos++
-		if escaped == 'b' || escaped == 'B' || escaped == 'A' || escaped == 'z' || escaped == 'Z' {
-			l.lastType = tokenEmpty
-			return token{Type: tokenEmpty}
+		if escaped == 'b' {
+			l.lastType = tokenWordBoundary
+			return token{Type: tokenWordBoundary}
+		}
+		if escaped == 'B' {
+			l.lastType = tokenNotWordBoundary
+			return token{Type: tokenNotWordBoundary}
+		}
+		if escaped == 'A' {
+			l.lastType = tokenBeginText
+			return token{Type: tokenBeginText}
+		}
+		if escaped == 'z' {
+			l.lastType = tokenEndText
+			return token{Type: tokenEndText}
+		}
+		if escaped == 'Z' {
+			l.lastType = tokenEndTextOptionalNewline
+			return token{Type: tokenEndTextOptionalNewline}
 		}
 		if escaped == 'p' || escaped == 'P' {
 			start := l.pos - 2

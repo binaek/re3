@@ -1,7 +1,10 @@
 package re3
 
 import (
+	"sort"
 	"strconv"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -21,6 +24,9 @@ type parser struct {
 	peekToken      token
 	groupCount     int
 	expr           string
+	caseInsensitive bool
+	dotAll          bool
+	unicodeMode     bool
 	prefixParseFns map[tokenType]func() (node, error)
 	infixParseFns  map[tokenType]func(node) (node, error)
 }
@@ -36,11 +42,18 @@ func newParser(tokens []token, expr string) *parser {
 		tokenLookAhead:   p.parseLookAhead,
 		tokenLookBehind:  p.parseLookBehind,
 		tokenNonCapParen: p.parseNonCapGroup,
-		tokenInlineFlags: func() (node, error) { return &emptyNode{}, nil },
+		tokenInlineFlags: p.parseInlineFlags,
 		tokenEmpty:       func() (node, error) { return &emptyNode{}, nil },
-		tokenComma:       func() (node, error) { return &literalNode{Value: ','}, nil },
-		tokenLBrace:      func() (node, error) { return &literalNode{Value: '{'}, nil },
-		tokenRBrace:      func() (node, error) { return &literalNode{Value: '}'}, nil },
+		tokenStart:       func() (node, error) { return &startNode{}, nil },
+		tokenEnd:         func() (node, error) { return &endNode{}, nil },
+		tokenWordBoundary: func() (node, error) { return &wordBoundaryNode{}, nil },
+		tokenNotWordBoundary: func() (node, error) { return &notWordBoundaryNode{}, nil },
+		tokenBeginText:   func() (node, error) { return &beginTextNode{}, nil },
+		tokenEndText:     func() (node, error) { return &endTextNode{}, nil },
+		tokenEndTextOptionalNewline: func() (node, error) { return &endTextOptionalNewlineNode{}, nil },
+		tokenComma:       func() (node, error) { return lowerRuneLiteral(','), nil },
+		tokenLBrace:      func() (node, error) { return lowerRuneLiteral('{'), nil },
+		tokenRBrace:      func() (node, error) { return lowerRuneLiteral('}'), nil },
 		tokenUnion:       p.parseEmptyLeftUnion,
 	}
 	p.infixParseFns = map[tokenType]func(node) (node, error){
@@ -109,31 +122,34 @@ func (p *parser) parseExpression(precedence int) (node, error) {
 
 // --- PARSING HANDLERS ---
 func (p *parser) parseLiteral() (node, error) {
-	return &literalNode{Value: p.curToken.Value}, nil
+	return p.literalRuneNode(p.curToken.Value), nil
 }
 
 func (p *parser) parseEscape() (node, error) {
 	val := p.curToken.Value
 	switch val {
 	case 'd', 'w', 's', 'D', 'W', 'S':
+		if p.unicodeMode {
+			return unicodeEscapeNode(val), nil
+		}
 		return &charClassNode{Class: "\\" + string(val)}, nil
 	case 'n':
-		return &literalNode{Value: '\n'}, nil
+		return p.literalRuneNode('\n'), nil
 	case 'r':
-		return &literalNode{Value: '\r'}, nil
+		return p.literalRuneNode('\r'), nil
 	case 't':
-		return &literalNode{Value: '\t'}, nil
+		return p.literalRuneNode('\t'), nil
 	case 'v':
-		return &literalNode{Value: '\v'}, nil
+		return p.literalRuneNode('\v'), nil
 	case 'f':
-		return &literalNode{Value: '\f'}, nil
+		return p.literalRuneNode('\f'), nil
 	case 'a':
-		return &literalNode{Value: '\a'}, nil
+		return p.literalRuneNode('\a'), nil
 	}
-	return &literalNode{Value: val}, nil
+	return p.literalRuneNode(val), nil
 }
 func (p *parser) parseCharClass() (node, error) {
-	return &charClassNode{Class: p.curToken.Text}, nil
+	return compileCharClassNode(p.curToken.Text, p.caseInsensitive, p.unicodeMode), nil
 }
 func (p *parser) parseComplement() (node, error) {
 	p.nextToken()
@@ -164,6 +180,16 @@ func (p *parser) parseGroup() (node, error) {
 }
 
 func (p *parser) parseNonCapGroup() (node, error) {
+	prevCaseInsensitive := p.caseInsensitive
+	prevDotAll := p.dotAll
+	prevUnicodeMode := p.unicodeMode
+	p.applyInlineFlags(p.curToken.Text)
+	defer func() {
+		p.caseInsensitive = prevCaseInsensitive
+		p.dotAll = prevDotAll
+		p.unicodeMode = prevUnicodeMode
+	}()
+
 	p.nextToken()
 
 	if p.curToken.Type == tokenRParen {
@@ -181,15 +207,29 @@ func (p *parser) parseNonCapGroup() (node, error) {
 	return exp, nil
 }
 func (p *parser) parseUnion(left node) (node, error) {
-	if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
-		return newUnionNode(left, &emptyNode{}), nil
+	acc := left
+	for {
+		if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
+			acc = newUnionNode(acc, &emptyNode{})
+			if p.peekToken.Type == tokenUnion {
+				// Consume repeated empty alternations like a||b iteratively.
+				p.nextToken()
+				continue
+			}
+			return acc, nil
+		}
+		p.nextToken()
+		right, err := p.parseExpression(UNION)
+		if err != nil {
+			return nil, err
+		}
+		acc = newUnionNode(acc, right)
+		if p.peekToken.Type != tokenUnion {
+			return acc, nil
+		}
+		// Consume the next '|' and continue parsing in an iterative loop.
+		p.nextToken()
 	}
-	p.nextToken()
-	right, err := p.parseExpression(UNION)
-	if err != nil {
-		return nil, err
-	}
-	return newUnionNode(left, right), nil
 }
 func (p *parser) parseIntersect(left node) (node, error) {
 	p.nextToken()
@@ -250,6 +290,8 @@ func (p *parser) isPeekStartOfExpression() bool {
 	return t == tokenLiteral || t == tokenLParen || t == tokenNonCapParen || t == tokenComplement ||
 		t == tokenCharClass || t == tokenEscape || t == tokenDot ||
 		t == tokenLookAhead || t == tokenLookBehind || t == tokenInlineFlags || t == tokenEmpty ||
+		t == tokenStart || t == tokenEnd || t == tokenWordBoundary || t == tokenNotWordBoundary ||
+		t == tokenBeginText || t == tokenEndText || t == tokenEndTextOptionalNewline ||
 		t == tokenComma || t == tokenLBrace || t == tokenRBrace
 }
 func (p *parser) parseImplicitConcat(left node) (node, error) {
@@ -261,7 +303,21 @@ func (p *parser) parseImplicitConcat(left node) (node, error) {
 	return newConcatNode(left, right), nil
 }
 func (p *parser) parseDot() (node, error) {
+	if p.unicodeMode {
+		if p.dotAll {
+			return newAnyRuneNode(false), nil
+		}
+		return newAnyNode(), nil
+	}
+	if p.dotAll {
+		return &anyByteNode{}, nil
+	}
 	return &anyNode{}, nil
+}
+
+func (p *parser) parseInlineFlags() (node, error) {
+	p.applyInlineFlags(p.curToken.Text)
+	return &emptyNode{}, nil
 }
 
 func (p *parser) parseLookAhead() (node, error) {
@@ -305,4 +361,103 @@ func (p *parser) peekPrecedence() int {
 		return prec
 	}
 	return LOWEST
+}
+
+func lowerRuneLiteral(r rune) node {
+	var buf [utf8.UTFMax]byte
+	n := utf8.EncodeRune(buf[:], r)
+	if n == 1 {
+		return &literalNode{Value: buf[0]}
+	}
+	out := node(&literalNode{Value: buf[0]})
+	for i := 1; i < n; i++ {
+		out = newConcatNode(out, &literalNode{Value: buf[i]})
+	}
+	return out
+}
+
+func (p *parser) literalRuneNode(r rune) node {
+	if !p.caseInsensitive {
+		return lowerRuneLiteral(r)
+	}
+	if !p.unicodeMode {
+		if r >= 'a' && r <= 'z' {
+			return unionNodes(lowerRuneLiteral(r), lowerRuneLiteral(r-'a'+'A'))
+		}
+		if r >= 'A' && r <= 'Z' {
+			return unionNodes(lowerRuneLiteral(r), lowerRuneLiteral(r-'A'+'a'))
+		}
+		return lowerRuneLiteral(r)
+	}
+	folds := map[rune]struct{}{r: {}}
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		folds[f] = struct{}{}
+	}
+	if len(folds) == 1 {
+		return lowerRuneLiteral(r)
+	}
+	runes := make([]rune, 0, len(folds))
+	for rr := range folds {
+		runes = append(runes, rr)
+	}
+	sort.Slice(runes, func(i, j int) bool { return runes[i] < runes[j] })
+	var nodes []node
+	for _, rr := range runes {
+		nodes = append(nodes, lowerRuneLiteral(rr))
+	}
+	return unionNodes(nodes...)
+}
+
+func (p *parser) applyInlineFlags(flags string) {
+	if flags == "" {
+		return
+	}
+	enable := true
+	for _, ch := range flags {
+		switch ch {
+		case '-':
+			enable = false
+		case 'i', 'I':
+			p.caseInsensitive = enable
+		case 's', 'S':
+			p.dotAll = enable
+		case 'u', 'U':
+			p.unicodeMode = enable
+		default:
+			// Ignore unsupported flags for now.
+		}
+	}
+}
+
+func unicodeEscapeNode(val rune) node {
+	switch val {
+	case 'd':
+		return compileUnicodeProperty("Nd")
+	case 'D':
+		return newIntersectNode(newAnyRuneNode(false), newComplementNode(compileUnicodeProperty("Nd")))
+	case 's':
+		return compileUnicodeProperty("White_Space")
+	case 'S':
+		return newIntersectNode(newAnyRuneNode(false), newComplementNode(compileUnicodeProperty("White_Space")))
+	case 'w':
+		word := unionNodes(
+			compileUnicodeProperty("L"),
+			compileUnicodeProperty("M"),
+			compileUnicodeProperty("N"),
+			compileUnicodeProperty("Pc"),
+			compileUnicodeProperty("Join_Control"),
+		)
+		return word
+	case 'W':
+		word := unionNodes(
+			compileUnicodeProperty("L"),
+			compileUnicodeProperty("M"),
+			compileUnicodeProperty("N"),
+			compileUnicodeProperty("Pc"),
+			compileUnicodeProperty("Join_Control"),
+		)
+		return newIntersectNode(newAnyRuneNode(false), newComplementNode(word))
+	default:
+		return lowerRuneLiteral(val)
+	}
 }
