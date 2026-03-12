@@ -2,11 +2,12 @@ package re3
 
 import (
 	"fmt"
+	"reflect"
 )
 
 type node interface {
-	Nullable() bool
-	Derivative(char rune) node
+	Nullable(ctx matchContext) bool
+	Derivative(b byte, ctx matchContext) node
 	Equals(other node) bool
 	Reverse() node
 	String() string // Crucial for sorting and deduplicating states
@@ -15,25 +16,25 @@ type node interface {
 // --- BASE NODES ---
 type falseNode struct{}
 
-func (n *falseNode) Nullable() bool            { return false }
-func (n *falseNode) Derivative(char rune) node { return n }
+func (n *falseNode) Nullable(_ matchContext) bool            { return false }
+func (n *falseNode) Derivative(b byte, _ matchContext) node { return n }
 func (n *falseNode) Equals(other node) bool    { _, ok := other.(*falseNode); return ok }
 func (n *falseNode) Reverse() node             { return n }
 func (n *falseNode) String() string            { return "False" }
 
 type emptyNode struct{}
 
-func (n *emptyNode) Nullable() bool            { return true }
-func (n *emptyNode) Derivative(char rune) node { return &falseNode{} }
+func (n *emptyNode) Nullable(_ matchContext) bool            { return true }
+func (n *emptyNode) Derivative(b byte, _ matchContext) node { return &falseNode{} }
 func (n *emptyNode) Equals(other node) bool    { _, ok := other.(*emptyNode); return ok }
 func (n *emptyNode) Reverse() node             { return n }
 func (n *emptyNode) String() string            { return "Empty" }
 
-type literalNode struct{ Value rune }
+type literalNode struct{ Value byte }
 
-func (n *literalNode) Nullable() bool { return false }
-func (n *literalNode) Derivative(char rune) node {
-	if char == n.Value {
+func (n *literalNode) Nullable(_ matchContext) bool { return false }
+func (n *literalNode) Derivative(b byte, _ matchContext) node {
+	if b == n.Value {
 		return &emptyNode{}
 	}
 	return &falseNode{}
@@ -43,14 +44,14 @@ func (n *literalNode) Equals(other node) bool {
 	return ok && n.Value == o.Value
 }
 func (n *literalNode) Reverse() node  { return n }
-func (n *literalNode) String() string { return fmt.Sprintf("Lit(%c)", n.Value) }
+func (n *literalNode) String() string { return fmt.Sprintf("Lit(0x%02x)", n.Value) }
 
 type anyNode struct{}
 
-func (n *anyNode) Nullable() bool            { return false }
-func (n *anyNode) Derivative(char rune) node {
+func (n *anyNode) Nullable(_ matchContext) bool            { return false }
+func (n *anyNode) Derivative(b byte, _ matchContext) node {
 	// Match any rune except newline, aligning with Go regexp (dot does not match \n by default).
-	if char == '\n' {
+	if b == '\n' {
 		return &falseNode{}
 	}
 	return &emptyNode{}
@@ -59,22 +60,49 @@ func (n *anyNode) Equals(other node) bool    { _, ok := other.(*anyNode); return
 func (n *anyNode) Reverse() node             { return n }
 func (n *anyNode) String() string            { return "Any" }
 
-type charClassNode struct{ Class string }
+// anyByteNode is an internal helper used for unanchored search pre-scan.
+// It consumes exactly one byte (including '\n').
+type anyByteNode struct{}
 
-func (n *charClassNode) Nullable() bool { return false }
-func (n *charClassNode) Derivative(char rune) node {
-	p := parseCharClass(n.Class)
-	if char < 256 && p[char] {
+func (n *anyByteNode) Nullable(_ matchContext) bool            { return false }
+func (n *anyByteNode) Derivative(b byte, _ matchContext) node  { return &emptyNode{} }
+func (n *anyByteNode) Equals(other node) bool                  { _, ok := other.(*anyByteNode); return ok }
+func (n *anyByteNode) Reverse() node                           { return n }
+func (n *anyByteNode) String() string                          { return "AnyByte" }
+
+type charClassNode struct {
+	Class string
+	Pred  predicate
+}
+
+func (n *charClassNode) Nullable(_ matchContext) bool { return false }
+func (n *charClassNode) Derivative(b byte, _ matchContext) node {
+	p := n.Pred
+	if p == (predicate{}) {
+		p = parseCharClass(n.Class)
+	}
+	if p[b] {
 		return &emptyNode{}
 	}
 	return &falseNode{}
 }
 func (n *charClassNode) Equals(other node) bool {
 	o, ok := other.(*charClassNode)
-	return ok && n.Class == o.Class
+	if !ok {
+		return false
+	}
+	if n.Class != "" || o.Class != "" {
+		return n.Class == o.Class
+	}
+	return n.Pred == o.Pred
 }
 func (n *charClassNode) Reverse() node  { return n }
-func (n *charClassNode) String() string { return fmt.Sprintf("Class(%s)", n.Class) }
+func (n *charClassNode) String() string {
+	if n.Class != "" {
+		return fmt.Sprintf("Class(%s)", n.Class)
+	}
+	return "Class(<bytes>)"
+}
 
 // --- SET-FLATTENED BOOLEAN OPERATORS ---
 
@@ -87,15 +115,18 @@ func newUnionNode(left, right node) node {
 	if _, ok := right.(*falseNode); ok {
 		return left
 	}
-	if left.Equals(right) {
+	if left == right {
 		return left
+	}
+	if shouldSwapCommutativeNodes(left, right) {
+		left, right = right, left
 	}
 	return &unionNode{Left: left, Right: right}
 }
 
-func (n *unionNode) Nullable() bool { return n.Left.Nullable() || n.Right.Nullable() }
-func (n *unionNode) Derivative(char rune) node {
-	return newUnionNode(n.Left.Derivative(char), n.Right.Derivative(char))
+func (n *unionNode) Nullable(ctx matchContext) bool { return n.Left.Nullable(ctx) || n.Right.Nullable(ctx) }
+func (n *unionNode) Derivative(b byte, ctx matchContext) node {
+	return newUnionNode(n.Left.Derivative(b, ctx), n.Right.Derivative(b, ctx))
 }
 func (n *unionNode) Equals(other node) bool {
 	o, ok := other.(*unionNode)
@@ -115,15 +146,33 @@ func newIntersectNode(left, right node) node {
 	if _, ok := right.(*falseNode); ok {
 		return &falseNode{}
 	}
-	if left.Equals(right) {
+	if left == right {
 		return left
+	}
+	if shouldSwapCommutativeNodes(left, right) {
+		left, right = right, left
 	}
 	return &intersectNode{Left: left, Right: right}
 }
 
-func (n *intersectNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
-func (n *intersectNode) Derivative(char rune) node {
-	return newIntersectNode(n.Left.Derivative(char), n.Right.Derivative(char))
+func shouldSwapCommutativeNodes(left, right node) bool {
+	lp := nodePointerID(left)
+	rp := nodePointerID(right)
+	if lp != rp {
+		return lp > rp
+	}
+	lf := fingerprintNode(left)
+	rf := fingerprintNode(right)
+	return lf > rf
+}
+
+func nodePointerID(n node) uintptr {
+	return reflect.ValueOf(n).Pointer()
+}
+
+func (n *intersectNode) Nullable(ctx matchContext) bool { return n.Left.Nullable(ctx) && n.Right.Nullable(ctx) }
+func (n *intersectNode) Derivative(b byte, ctx matchContext) node {
+	return newIntersectNode(n.Left.Derivative(b, ctx), n.Right.Derivative(b, ctx))
 }
 func (n *intersectNode) Equals(other node) bool {
 	o, ok := other.(*intersectNode)
@@ -142,9 +191,9 @@ func newComplementNode(child node) node {
 	}
 	return &complementNode{child}
 }
-func (n *complementNode) Nullable() bool { return !n.Child.Nullable() }
-func (n *complementNode) Derivative(char rune) node {
-	return newComplementNode(n.Child.Derivative(char))
+func (n *complementNode) Nullable(ctx matchContext) bool { return !n.Child.Nullable(ctx) }
+func (n *complementNode) Derivative(b byte, ctx matchContext) node {
+	return newComplementNode(n.Child.Derivative(b, ctx))
 }
 func (n *complementNode) Equals(other node) bool {
 	o, ok := other.(*complementNode)
@@ -171,11 +220,11 @@ func newConcatNode(left, right node) node {
 	}
 	return &concatNode{left, right}
 }
-func (n *concatNode) Nullable() bool { return n.Left.Nullable() && n.Right.Nullable() }
-func (n *concatNode) Derivative(char rune) node {
-	leftDerivConcat := newConcatNode(n.Left.Derivative(char), n.Right)
-	if n.Left.Nullable() {
-		return newUnionNode(leftDerivConcat, n.Right.Derivative(char))
+func (n *concatNode) Nullable(ctx matchContext) bool { return n.Left.Nullable(ctx) && n.Right.Nullable(ctx) }
+func (n *concatNode) Derivative(b byte, ctx matchContext) node {
+	leftDerivConcat := newConcatNode(n.Left.Derivative(b, ctx), n.Right)
+	if n.Left.Nullable(ctx) {
+		return newUnionNode(leftDerivConcat, n.Right.Derivative(b, ctx))
 	}
 	return leftDerivConcat
 }
@@ -190,8 +239,8 @@ func (n *concatNode) String() string {
 
 type starNode struct{ Child node }
 
-func (n *starNode) Nullable() bool            { return true }
-func (n *starNode) Derivative(char rune) node { return newConcatNode(n.Child.Derivative(char), n) }
+func (n *starNode) Nullable(_ matchContext) bool            { return true }
+func (n *starNode) Derivative(b byte, ctx matchContext) node { return newConcatNode(n.Child.Derivative(b, ctx), n) }
 func (n *starNode) Equals(other node) bool {
 	o, ok := other.(*starNode)
 	return ok && n.Child.Equals(o.Child)
@@ -229,11 +278,11 @@ func (n *repeatNode) String() string {
 	return fmt.Sprintf("Repeat(%s, %d, %d)", n.Child, n.Min, n.Max)
 }
 
-func (n *repeatNode) Nullable() bool {
-	return n.Min == 0 || n.Child.Nullable()
+func (n *repeatNode) Nullable(ctx matchContext) bool {
+	return n.Min == 0 || n.Child.Nullable(ctx)
 }
 
-func (n *repeatNode) Derivative(char rune) node {
+func (n *repeatNode) Derivative(b byte, ctx matchContext) node {
 	if n.Max == 0 {
 		return &falseNode{}
 	}
@@ -245,9 +294,9 @@ func (n *repeatNode) Derivative(char rune) node {
 	nextMax := n.Max - 1
 
 	nextRepeat := newRepeatNode(n.Child, nextMin, nextMax)
-	derivChild := n.Child.Derivative(char)
+	derivChild := n.Child.Derivative(b, ctx)
 
-	if !n.Child.Nullable() {
+	if !n.Child.Nullable(ctx) {
 		return newConcatNode(derivChild, nextRepeat)
 	}
 
@@ -290,8 +339,8 @@ type groupNode struct {
 	Child   node
 }
 
-func (n *groupNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *groupNode) Derivative(char rune) node { return n.Child.Derivative(char) }
+func (n *groupNode) Nullable(ctx matchContext) bool            { return n.Child.Nullable(ctx) }
+func (n *groupNode) Derivative(b byte, ctx matchContext) node { return n.Child.Derivative(b, ctx) }
 func (n *groupNode) Equals(other node) bool {
 	o, ok := other.(*groupNode)
 	return ok && n.GroupID == o.GroupID && n.Child.Equals(o.Child)
@@ -302,8 +351,8 @@ func (n *groupNode) String() string { return fmt.Sprintf("Group%d(%s)", n.GroupI
 // lookAheadNode is (?=R). Zero-width; does not consume input. Foundation for TDFA.
 type lookAheadNode struct{ Child node }
 
-func (n *lookAheadNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *lookAheadNode) Derivative(r rune) node   { return &lookAheadNode{Child: n.Child.Derivative(r)} }
+func (n *lookAheadNode) Nullable(ctx matchContext) bool            { return n.Child.Nullable(ctx) }
+func (n *lookAheadNode) Derivative(b byte, ctx matchContext) node   { return &lookAheadNode{Child: n.Child.Derivative(b, ctx)} }
 func (n *lookAheadNode) Equals(other node) bool {
 	o, ok := other.(*lookAheadNode)
 	return ok && n.Child.Equals(o.Child)
@@ -314,8 +363,8 @@ func (n *lookAheadNode) String() string { return fmt.Sprintf("LookAhead(%s)", n.
 // lookBehindNode is (?<=R). Zero-width; foundation for TDFA.
 type lookBehindNode struct{ Child node }
 
-func (n *lookBehindNode) Nullable() bool            { return n.Child.Nullable() }
-func (n *lookBehindNode) Derivative(r rune) node   { return &lookBehindNode{Child: n.Child.Derivative(r)} }
+func (n *lookBehindNode) Nullable(ctx matchContext) bool            { return n.Child.Nullable(ctx) }
+func (n *lookBehindNode) Derivative(b byte, ctx matchContext) node   { return &lookBehindNode{Child: n.Child.Derivative(b, ctx)} }
 func (n *lookBehindNode) Equals(other node) bool {
 	o, ok := other.(*lookBehindNode)
 	return ok && n.Child.Equals(o.Child)
@@ -332,8 +381,8 @@ type tagNode struct {
 	IsStart bool
 }
 
-func (n *tagNode) Nullable() bool            { return true }
-func (n *tagNode) Derivative(rune) node      { return &emptyNode{} }
+func (n *tagNode) Nullable(_ matchContext) bool            { return true }
+func (n *tagNode) Derivative(byte, matchContext) node      { return &emptyNode{} }
 func (n *tagNode) Equals(other node) bool {
 	o, ok := other.(*tagNode)
 	return ok && n.Id == o.Id && n.IsStart == o.IsStart
@@ -344,4 +393,192 @@ func (n *tagNode) String() string {
 		return fmt.Sprintf("Tag(%d,start)", n.Id)
 	}
 	return fmt.Sprintf("Tag(%d,end)", n.Id)
+}
+
+type startNode struct{}
+
+func (n *startNode) Nullable(ctx matchContext) bool            { return ctx.AtStart || ctx.PrevIsNewline }
+func (n *startNode) Derivative(byte, matchContext) node        { return &falseNode{} }
+func (n *startNode) Equals(other node) bool                    { _, ok := other.(*startNode); return ok }
+func (n *startNode) Reverse() node                             { return &endNode{} }
+func (n *startNode) String() string                            { return "Start" }
+
+type endNode struct{}
+
+func (n *endNode) Nullable(ctx matchContext) bool              { return ctx.AtEnd || ctx.NextIsNewline }
+func (n *endNode) Derivative(byte, matchContext) node          { return &falseNode{} }
+func (n *endNode) Equals(other node) bool                      { _, ok := other.(*endNode); return ok }
+func (n *endNode) Reverse() node                               { return &startNode{} }
+func (n *endNode) String() string                              { return "End" }
+
+type beginTextNode struct{}
+
+func (n *beginTextNode) Nullable(ctx matchContext) bool        { return ctx.AtStart }
+func (n *beginTextNode) Derivative(byte, matchContext) node    { return &falseNode{} }
+func (n *beginTextNode) Equals(other node) bool                { _, ok := other.(*beginTextNode); return ok }
+func (n *beginTextNode) Reverse() node                         { return &endTextNode{} }
+func (n *beginTextNode) String() string                        { return "BeginText" }
+
+type endTextNode struct{}
+
+func (n *endTextNode) Nullable(ctx matchContext) bool          { return ctx.AtEnd }
+func (n *endTextNode) Derivative(byte, matchContext) node      { return &falseNode{} }
+func (n *endTextNode) Equals(other node) bool                  { _, ok := other.(*endTextNode); return ok }
+func (n *endTextNode) Reverse() node                           { return &beginTextNode{} }
+func (n *endTextNode) String() string                          { return "EndText" }
+
+type endTextOptionalNewlineNode struct{}
+
+func (n *endTextOptionalNewlineNode) Nullable(ctx matchContext) bool {
+	return ctx.AtEndAfterOptionalNewline
+}
+func (n *endTextOptionalNewlineNode) Derivative(byte, matchContext) node { return &falseNode{} }
+func (n *endTextOptionalNewlineNode) Equals(other node) bool {
+	_, ok := other.(*endTextOptionalNewlineNode)
+	return ok
+}
+func (n *endTextOptionalNewlineNode) Reverse() node  { return &beginTextNode{} }
+func (n *endTextOptionalNewlineNode) String() string { return "EndTextOptionalNewline" }
+
+type wordBoundaryNode struct{}
+
+func (n *wordBoundaryNode) Nullable(ctx matchContext) bool {
+	return ctx.PrevIsWord != ctx.NextIsWord
+}
+func (n *wordBoundaryNode) Derivative(byte, matchContext) node { return &falseNode{} }
+func (n *wordBoundaryNode) Equals(other node) bool {
+	_, ok := other.(*wordBoundaryNode)
+	return ok
+}
+func (n *wordBoundaryNode) Reverse() node  { return n }
+func (n *wordBoundaryNode) String() string { return "WordBoundary" }
+
+type notWordBoundaryNode struct{}
+
+func (n *notWordBoundaryNode) Nullable(ctx matchContext) bool {
+	return ctx.PrevIsWord == ctx.NextIsWord
+}
+func (n *notWordBoundaryNode) Derivative(byte, matchContext) node { return &falseNode{} }
+func (n *notWordBoundaryNode) Equals(other node) bool {
+	_, ok := other.(*notWordBoundaryNode)
+	return ok
+}
+func (n *notWordBoundaryNode) Reverse() node  { return n }
+func (n *notWordBoundaryNode) String() string { return "NotWordBoundary" }
+
+func containsAssertions(n node) bool {
+	switch nd := n.(type) {
+	case *startNode, *endNode, *beginTextNode, *endTextNode, *endTextOptionalNewlineNode, *wordBoundaryNode, *notWordBoundaryNode:
+		return true
+	case *concatNode:
+		return containsAssertions(nd.Left) || containsAssertions(nd.Right)
+	case *unionNode:
+		return containsAssertions(nd.Left) || containsAssertions(nd.Right)
+	case *intersectNode:
+		return containsAssertions(nd.Left) || containsAssertions(nd.Right)
+	case *complementNode:
+		return containsAssertions(nd.Child)
+	case *starNode:
+		return containsAssertions(nd.Child)
+	case *repeatNode:
+		return containsAssertions(nd.Child)
+	case *groupNode:
+		return containsAssertions(nd.Child)
+	case *lookAheadNode:
+		return containsAssertions(nd.Child)
+	case *lookBehindNode:
+		return containsAssertions(nd.Child)
+	default:
+		return false
+	}
+}
+
+func fingerprintNode(n node) uint64 {
+	const seed uint64 = 1469598103934665603
+	h := seed
+	switch nd := n.(type) {
+	case *falseNode:
+		return mixFingerprint(h, 1)
+	case *emptyNode:
+		return mixFingerprint(h, 2)
+	case *literalNode:
+		return mixFingerprint(mixFingerprint(h, 3), uint64(nd.Value))
+	case *anyNode:
+		return mixFingerprint(h, 4)
+	case *charClassNode:
+		if nd.Class != "" {
+			return mixFingerprint(mixFingerprint(h, 5), hashString64(nd.Class))
+		}
+		return mixFingerprint(mixFingerprint(h, 5), hashPredicate64(nd.Pred))
+	case *anyByteNode:
+		return mixFingerprint(h, 23)
+	case *unionNode:
+		return mixFingerprint(mixFingerprint(mixFingerprint(h, 6), fingerprintNode(nd.Left)), fingerprintNode(nd.Right))
+	case *intersectNode:
+		return mixFingerprint(mixFingerprint(mixFingerprint(h, 7), fingerprintNode(nd.Left)), fingerprintNode(nd.Right))
+	case *complementNode:
+		return mixFingerprint(mixFingerprint(h, 8), fingerprintNode(nd.Child))
+	case *concatNode:
+		return mixFingerprint(mixFingerprint(mixFingerprint(h, 9), fingerprintNode(nd.Left)), fingerprintNode(nd.Right))
+	case *starNode:
+		return mixFingerprint(mixFingerprint(h, 10), fingerprintNode(nd.Child))
+	case *repeatNode:
+		h = mixFingerprint(h, 11)
+		h = mixFingerprint(h, fingerprintNode(nd.Child))
+		h = mixFingerprint(h, uint64(nd.Min+1))
+		return mixFingerprint(h, uint64(nd.Max+1))
+	case *groupNode:
+		return mixFingerprint(mixFingerprint(mixFingerprint(h, 12), uint64(nd.GroupID+1)), fingerprintNode(nd.Child))
+	case *lookAheadNode:
+		return mixFingerprint(mixFingerprint(h, 13), fingerprintNode(nd.Child))
+	case *lookBehindNode:
+		return mixFingerprint(mixFingerprint(h, 14), fingerprintNode(nd.Child))
+	case *tagNode:
+		h = mixFingerprint(mixFingerprint(h, 15), uint64(nd.Id+1))
+		if nd.IsStart {
+			return mixFingerprint(h, 1)
+		}
+		return mixFingerprint(h, 0)
+	case *startNode:
+		return mixFingerprint(h, 16)
+	case *endNode:
+		return mixFingerprint(h, 17)
+	case *beginTextNode:
+		return mixFingerprint(h, 18)
+	case *endTextNode:
+		return mixFingerprint(h, 19)
+	case *endTextOptionalNewlineNode:
+		return mixFingerprint(h, 20)
+	case *wordBoundaryNode:
+		return mixFingerprint(h, 21)
+	case *notWordBoundaryNode:
+		return mixFingerprint(h, 22)
+	default:
+		return mixFingerprint(h, 255)
+	}
+}
+
+func mixFingerprint(h, v uint64) uint64 {
+	h ^= v + 0x9e3779b97f4a7c15 + (h << 6) + (h >> 2)
+	return h
+}
+
+func hashString64(s string) uint64 {
+	h := uint64(1469598103934665603)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+func hashPredicate64(p predicate) uint64 {
+	h := uint64(1469598103934665603)
+	for i := 0; i < len(p); i++ {
+		if p[i] {
+			h ^= uint64(i + 1)
+			h *= 1099511628211
+		}
+	}
+	return h
 }
