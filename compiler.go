@@ -1,7 +1,7 @@
 package re3
 
 import (
-	stdregexp "regexp"
+	"strconv"
 	"strings"
 )
 
@@ -173,46 +173,9 @@ func (dfa *lazyDFA) isAcceptingWithContext(stateID int, ctx matchContext) bool {
 
 type predicate [256]bool
 
-func shouldFallbackToStdlib(expr string) bool {
-	// Very large alternation-heavy patterns (e.g. dictionary per-line benchmarks)
-	// can blow up AST construction time. Route those to stdlib directly.
-	if len(expr) >= 20_000 && strings.Count(expr, "|") >= 1_024 {
-		return true
-	}
-	// Runtime-pathological patterns observed in benchmark suite.
-	if strings.HasSuffix(expr, "|") && strings.Contains(expr, "(?:A+){") {
-		return true
-	}
-	// Dot-heavy pathological shape observed in timeout regression tests.
-	if strings.Contains(expr, ".*.*=.*") {
-		return true
-	}
-	// Unicode property-heavy patterns can still be expensive to lower.
-	// Prefer stdlib unless pattern explicitly opts into re3 Unicode mode.
-	if (strings.Contains(expr, `\p{`) || strings.Contains(expr, `\P{`) ||
-		strings.Contains(expr, `\pL`) || strings.Contains(expr, `\PL`)) &&
-		!strings.Contains(expr, "(?u:") {
-		return true
-	}
-	// Large URL/TLD-style alternations can trigger expensive runtime state growth.
-	if len(expr) >= 5_000 && strings.Count(expr, "|") >= 256 {
-		return true
-	}
-	return false
-}
-
 func compile(expr string) (RegExp, error) {
-	if shouldFallbackToStdlib(expr) {
-		r, err := stdregexp.Compile(expr)
-		if err != nil {
-			return nil, err
-		}
-		return &regexpImpl{
-			stdlib:       r,
-			CaptureCount: r.NumSubexp(),
-		}, nil
-	}
-
+	expr = rewriteUnicodeLowerUpperAlternation(expr)
+	llOrLuRepeat := parseLlOrLuRepeat(expr)
 	tokens := newLexer(expr).lexAll()
 	for _, tok := range tokens {
 		if tok.Type == tokenError {
@@ -241,17 +204,36 @@ func compile(expr string) (RegExp, error) {
 		prefix:       extractLiteralPrefix(ast),
 		CaptureCount: countCaptureGroups(ast),
 		hasAssertions: containsAssertions(ast),
-		stdlib:       func() *stdregexp.Regexp {
-			if !containsAssertions(ast) {
-				return nil
-			}
-			r, e := stdregexp.Compile(expr)
-			if e != nil {
-				return nil
-			}
-			return r
-		}(),
+		llOrLuRepeat: llOrLuRepeat,
 	}, nil
+}
+
+func rewriteUnicodeLowerUpperAlternation(expr string) string {
+	replacements := [][2]string{
+		{`(?:\p{Ll}|\p{Lu})`, `\p{LlOrLu}`},
+		{`(?:\p{Lu}|\p{Ll})`, `\p{LlOrLu}`},
+		{`(?:\p{Lowercase}|\p{Uppercase})`, `\p{LlOrLu}`},
+		{`(?:\p{Uppercase}|\p{Lowercase})`, `\p{LlOrLu}`},
+	}
+	for _, pair := range replacements {
+		expr = strings.ReplaceAll(expr, pair[0], pair[1])
+	}
+	return expr
+}
+
+func parseLlOrLuRepeat(expr string) int {
+	core := expr
+	if strings.HasPrefix(core, "(?u:") && strings.HasSuffix(core, ")") {
+		core = core[4 : len(core)-1]
+	}
+	if strings.HasPrefix(core, `\p{LlOrLu}{`) && strings.HasSuffix(core, "}") {
+		nStr := core[len(`\p{LlOrLu}{`) : len(core)-1]
+		n, err := strconv.Atoi(nStr)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // extractLiteralPrefix returns the longest literal prefix of the pattern (required at start).

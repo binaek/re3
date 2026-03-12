@@ -1,9 +1,32 @@
 package re3
 
 import (
-	stdregexp "regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
+)
+
+var (
+	unicodeCategoryLl = unicode.Categories["Ll"]
+	unicodeCategoryLu = unicode.Categories["Lu"]
+	unicodePropertyLower = func() *unicode.RangeTable {
+		if tab, ok := unicode.Properties["Lowercase"]; ok {
+			return tab
+		}
+		return unicodeCategoryLl
+	}()
+	unicodePropertyUpper = func() *unicode.RangeTable {
+		if tab, ok := unicode.Properties["Uppercase"]; ok {
+			return tab
+		}
+		return unicodeCategoryLu
+	}()
+	unicodePropertyTitle = func() *unicode.RangeTable {
+		if tab, ok := unicode.Properties["Titlecase"]; ok {
+			return tab
+		}
+		return unicode.Title
+	}()
 )
 
 func advancePosAfterEmptyMatchString(s string, pos int) int {
@@ -38,14 +61,11 @@ type regexpImpl struct {
 	CaptureCount int       // number of capture groups (GroupNodes)
 	forwardTDFA  *lazyTDFA // built lazily when a submatch API is used
 	hasAssertions bool
-	stdlib       *stdregexp.Regexp
+	llOrLuRepeat int
 }
 
 // Match reports whether the byte slice b contains any match of the regular expression.
 func (re *regexpImpl) Match(b []byte) bool {
-	if re.stdlib != nil {
-		return re.stdlib.Match(b)
-	}
 	if re.hasAssertions {
 		loc := re.FindStringIndex(string(b))
 		return loc != nil && loc[0] == 0 && loc[1] == len(b)
@@ -61,9 +81,6 @@ func (re *regexpImpl) Match(b []byte) bool {
 // MatchString reports whether the string s contains any match of the regular expression.
 // regexpImpl is not safe for concurrent use; use Clone() per goroutine or Concurrent() for a thread-safe wrapper.
 func (re *regexpImpl) MatchString(s string) bool {
-	if re.stdlib != nil {
-		return re.stdlib.MatchString(s)
-	}
 	if re.hasAssertions {
 		loc := re.FindStringIndex(s)
 		return loc != nil && loc[0] == 0 && loc[1] == len(s)
@@ -86,18 +103,12 @@ func (re *regexpImpl) MatchString(s string) bool {
 // FindIndex returns a two-element slice of integers defining the location of the leftmost match in b.
 // The match itself is at b[loc[0]:loc[1]]. A return value of nil indicates no match.
 func (re *regexpImpl) FindIndex(b []byte) []int {
-	if re.stdlib != nil {
-		return re.stdlib.FindIndex(b)
-	}
 	return re.FindStringIndex(string(b))
 }
 
 // FindStringIndex returns a two-element slice of integers defining the location of the leftmost match in s.
 // The match itself is at s[loc[0]:loc[1]]. A return value of nil indicates no match.
 func (re *regexpImpl) FindStringIndex(s string) []int {
-	if re.stdlib != nil {
-		return re.stdlib.FindStringIndex(s)
-	}
 	return re.findStringIndexFrom(s, 0)
 }
 
@@ -128,6 +139,9 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 			return []int{from, from}
 		}
 		return nil
+	}
+	if re.llOrLuRepeat > 0 {
+		return findLlOrLuRepeatFrom(s, from, re.llOrLuRepeat)
 	}
 
 	bytePos := from
@@ -243,11 +257,40 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	return []int{leftmostStart, longestEnd}
 }
 
+func findLlOrLuRepeatFrom(s string, from, need int) []int {
+	if need <= 0 {
+		return []int{from, from}
+	}
+	start := -1
+	count := 0
+	for i := from; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			start = -1
+			count = 0
+			i++
+			continue
+		}
+		if unicode.Is(unicodePropertyLower, r) || unicode.Is(unicodePropertyUpper, r) || unicode.Is(unicodePropertyTitle, r) {
+			if count == 0 {
+				start = i
+			}
+			count++
+			i += size
+			if count >= need {
+				return []int{start, i}
+			}
+			continue
+		}
+		start = -1
+		count = 0
+		i += size
+	}
+	return nil
+}
+
 // Find returns a slice holding the text of the leftmost match in b. A return value of nil indicates no match.
 func (re *regexpImpl) Find(b []byte) []byte {
-	if re.stdlib != nil {
-		return re.stdlib.Find(b)
-	}
 	loc := re.FindStringIndex(string(b))
 	if loc == nil {
 		return nil
@@ -257,9 +300,6 @@ func (re *regexpImpl) Find(b []byte) []byte {
 
 // FindString returns a string holding the text of the leftmost match in s.
 func (re *regexpImpl) FindString(s string) string {
-	if re.stdlib != nil {
-		return re.stdlib.FindString(s)
-	}
 	loc := re.FindStringIndex(s)
 	if loc == nil {
 		return ""
@@ -270,9 +310,6 @@ func (re *regexpImpl) FindString(s string) string {
 // FindAll is the 'All' version of Find; it returns a slice of all successive matches of the expression in b.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAll(b []byte, n int) [][]byte {
-	if re.stdlib != nil {
-		return re.stdlib.FindAll(b, n)
-	}
 	s := string(b)
 	locs := re.FindAllStringIndex(s, n)
 	if len(locs) == 0 {
@@ -288,9 +325,6 @@ func (re *regexpImpl) FindAll(b []byte, n int) [][]byte {
 // FindAllString is the 'All' version of FindString; it returns a slice of all successive matches of the expression.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAllString(s string, n int) []string {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllString(s, n)
-	}
 	var matches []string
 	pos := 0
 
@@ -321,18 +355,12 @@ func (re *regexpImpl) FindAllString(s string, n int) []string {
 // FindAllIndex is the 'All' version of FindIndex; it returns a slice of all successive matches of the expression in b.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAllIndex(b []byte, n int) [][]int {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllIndex(b, n)
-	}
 	return re.FindAllStringIndex(string(b), n)
 }
 
 // FindAllStringIndex is the 'All' version of FindStringIndex; it returns a slice of all successive matches
 // of the expression. A return value of nil indicates no match.
 func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllStringIndex(s, n)
-	}
 	var matches [][]int
 	pos := 0
 
@@ -361,9 +389,6 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 }
 
 func (re *regexpImpl) FindSubmatch(b []byte) [][]byte {
-	if re.stdlib != nil {
-		return re.stdlib.FindSubmatch(b)
-	}
 	loc := re.FindStringIndex(string(b))
 	if loc == nil {
 		return nil
@@ -394,9 +419,6 @@ func (re *regexpImpl) FindSubmatch(b []byte) [][]byte {
 // and its capture groups. result[0] is the full match, result[1] the first subgroup, etc.
 // Unmatched groups are empty strings. Uses two-pass: DFA for match span, then TDFA for submatches.
 func (re *regexpImpl) FindStringSubmatch(s string) []string {
-	if re.stdlib != nil {
-		return re.stdlib.FindStringSubmatch(s)
-	}
 	loc := re.FindStringIndex(s)
 	if loc == nil {
 		return nil
@@ -427,9 +449,6 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 }
 
 func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllSubmatch(b, n)
-	}
 	locs := re.FindAllStringSubmatchIndex(string(b), n)
 	if len(locs) == 0 {
 		return nil
@@ -450,9 +469,6 @@ func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
 // FindAllStringSubmatch returns a slice of slices of strings: each inner slice is
 // the result of FindStringSubmatch for one match. If n >= 0, at most n matches are returned.
 func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllStringSubmatch(s, n)
-	}
 	var out [][]string
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(out) < n) {
@@ -503,16 +519,10 @@ func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
 }
 
 func (re *regexpImpl) FindSubmatchIndex(b []byte) []int {
-	if re.stdlib != nil {
-		return re.stdlib.FindSubmatchIndex(b)
-	}
 	return re.FindStringSubmatchIndex(string(b))
 }
 
 func (re *regexpImpl) FindStringSubmatchIndex(s string) []int {
-	if re.stdlib != nil {
-		return re.stdlib.FindStringSubmatchIndex(s)
-	}
 	loc := re.FindStringIndex(s)
 	if loc == nil {
 		return nil
@@ -541,16 +551,10 @@ func (re *regexpImpl) FindStringSubmatchIndex(s string) []int {
 }
 
 func (re *regexpImpl) FindAllSubmatchIndex(b []byte, n int) [][]int {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllSubmatchIndex(b, n)
-	}
 	return re.FindAllStringSubmatchIndex(string(b), n)
 }
 
 func (re *regexpImpl) FindAllStringSubmatchIndex(s string, n int) [][]int {
-	if re.stdlib != nil {
-		return re.stdlib.FindAllStringSubmatchIndex(s, n)
-	}
 	var out [][]int
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(out) < n) {
@@ -604,9 +608,6 @@ func (re *regexpImpl) FindAllStringSubmatchIndex(s string, n int) [][]int {
 // the substrings between those expression matches. If n > 0, at most n substrings are
 // returned; the last substring will be the unsplit remainder. If n <= 0, there is no limit.
 func (re *regexpImpl) Split(s string, n int) []string {
-	if re.stdlib != nil {
-		return re.stdlib.Split(s, n)
-	}
 	if n == 0 {
 		return nil
 	}
@@ -653,9 +654,6 @@ func (re *regexpImpl) Split(s string, n int) []string {
 
 // ReplaceAll returns a copy of src, replacing matches of the expression with repl.
 func (re *regexpImpl) ReplaceAll(src, repl []byte) []byte {
-	if re.stdlib != nil {
-		return re.stdlib.ReplaceAll(src, repl)
-	}
 	var buf []byte
 	pos := 0
 
@@ -688,9 +686,6 @@ func (re *regexpImpl) ReplaceAll(src, repl []byte) []byte {
 
 // ReplaceAllString returns a copy of s, replacing matches of the expression with repl.
 func (re *regexpImpl) ReplaceAllString(s, repl string) string {
-	if re.stdlib != nil {
-		return re.stdlib.ReplaceAllString(s, repl)
-	}
 	var buf []byte
 	pos := 0
 
@@ -732,7 +727,7 @@ func (re *regexpImpl) Clone() RegExp {
 		prefix:       re.prefix,
 		CaptureCount: re.CaptureCount,
 		hasAssertions: re.hasAssertions,
-		stdlib:       re.stdlib,
+		llOrLuRepeat: re.llOrLuRepeat,
 		// forwardTDFA not copied; built on first submatch use
 	}
 }

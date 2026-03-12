@@ -3,8 +3,17 @@ package re3
 import (
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
+)
+
+var (
+	unicodePropertyCacheMu sync.RWMutex
+	unicodePropertyCache   = make(map[string]node)
+
+	runeRangeCacheMu sync.RWMutex
+	runeRangeCache   = make(map[uint64]node)
 )
 
 func newAnyNode() node {
@@ -149,6 +158,14 @@ func compileRuneRangeToBytes(min, max rune) node {
 	if min > max {
 		return &falseNode{}
 	}
+	key := (uint64(min) << 21) | uint64(max)
+	runeRangeCacheMu.RLock()
+	if cached, ok := runeRangeCache[key]; ok {
+		runeRangeCacheMu.RUnlock()
+		return cached
+	}
+	runeRangeCacheMu.RUnlock()
+
 	root := &utf8TrieNode{}
 	var buf [utf8.UTFMax]byte
 	for r := min; r <= max; r++ {
@@ -161,7 +178,11 @@ func compileRuneRangeToBytes(min, max rune) node {
 			break
 		}
 	}
-	return root.toNode()
+	out := root.toNode()
+	runeRangeCacheMu.Lock()
+	runeRangeCache[key] = out
+	runeRangeCacheMu.Unlock()
+	return out
 }
 
 func compileRuneTableToBytes(tab *unicode.RangeTable) node {
@@ -199,74 +220,205 @@ func compileRuneTableToBytes(tab *unicode.RangeTable) node {
 	return unionNodes(nodes...)
 }
 
+func compileRuneTablesToBytes(tabs ...*unicode.RangeTable) node {
+	root := &utf8TrieNode{}
+	var buf [utf8.UTFMax]byte
+	for _, tab := range tabs {
+		if tab == nil {
+			continue
+		}
+		for _, r16 := range tab.R16 {
+			lo := rune(r16.Lo)
+			hi := rune(r16.Hi)
+			stride := rune(r16.Stride)
+			if stride == 0 {
+				continue
+			}
+			for r := lo; r <= hi; r += stride {
+				if !utf8.ValidRune(r) {
+					continue
+				}
+				n := utf8.EncodeRune(buf[:], r)
+				root.insert(buf[:n])
+				if r == utf8.MaxRune {
+					break
+				}
+			}
+		}
+		for _, r32 := range tab.R32 {
+			lo := rune(r32.Lo)
+			hi := rune(r32.Hi)
+			stride := rune(r32.Stride)
+			if stride == 0 {
+				continue
+			}
+			for r := lo; r <= hi; r += stride {
+				if !utf8.ValidRune(r) {
+					continue
+				}
+				n := utf8.EncodeRune(buf[:], r)
+				root.insert(buf[:n])
+				if r == utf8.MaxRune {
+					break
+				}
+			}
+		}
+	}
+	return root.toNode()
+}
+
 func compileUnicodeProperty(name string) node {
 	key := normalizeUnicodePropertyName(name)
 	switch key {
 	case "l", "letter":
-		return compileRuneTableToBytes(unicode.Letter)
+		return compileUnicodePropertyCached("letter", func() node {
+			return compileRuneTableToBytes(unicode.Letter)
+		})
 	case "lu", "uppercaseletter":
-		return compileRuneTableToBytes(unicode.Upper)
+		return compileUnicodePropertyCached("lu", func() node {
+			return compileRuneTableToBytes(unicode.Upper)
+		})
 	case "ll", "lowercaseletter":
-		return compileRuneTableToBytes(unicode.Lower)
+		return compileUnicodePropertyCached("ll", func() node {
+			return compileRuneTableToBytes(unicode.Lower)
+		})
+	case "llorlu", "lowerorupper", "lowercaseoruppercase":
+		return compileUnicodePropertyCached("llorlu", func() node {
+			lower := unicode.Lower
+			if tab, ok := unicode.Properties["Lowercase"]; ok {
+				lower = tab
+			}
+			upper := unicode.Upper
+			if tab, ok := unicode.Properties["Uppercase"]; ok {
+				upper = tab
+			}
+			title := unicode.Title
+			if tab, ok := unicode.Properties["Titlecase"]; ok {
+				title = tab
+			}
+			return compileRuneTablesToBytes(lower, upper, title)
+		})
 	case "lt", "titlecaseletter":
-		return compileRuneTableToBytes(unicode.Title)
+		return compileUnicodePropertyCached("lt", func() node {
+			return compileRuneTableToBytes(unicode.Title)
+		})
 	case "uppercase":
-		if tab, ok := unicode.Properties["Uppercase"]; ok {
-			return compileRuneTableToBytes(tab)
-		}
-		return compileRuneTableToBytes(unicode.Upper)
+		return compileUnicodePropertyCached("uppercase", func() node {
+			if tab, ok := unicode.Properties["Uppercase"]; ok {
+				return compileRuneTableToBytes(tab)
+			}
+			return compileRuneTableToBytes(unicode.Upper)
+		})
 	case "lowercase":
-		if tab, ok := unicode.Properties["Lowercase"]; ok {
-			return compileRuneTableToBytes(tab)
-		}
-		return compileRuneTableToBytes(unicode.Lower)
+		return compileUnicodePropertyCached("lowercase", func() node {
+			if tab, ok := unicode.Properties["Lowercase"]; ok {
+				return compileRuneTableToBytes(tab)
+			}
+			return compileRuneTableToBytes(unicode.Lower)
+		})
 	case "titlecase":
-		return compileRuneTableToBytes(unicode.Title)
+		return compileUnicodePropertyCached("titlecase", func() node {
+			return compileRuneTableToBytes(unicode.Title)
+		})
 	case "lm", "modifierletter":
-		return compileRuneTableToBytes(unicode.Lm)
+		return compileUnicodePropertyCached("lm", func() node {
+			return compileRuneTableToBytes(unicode.Lm)
+		})
 	case "lo", "otherletter":
-		return compileRuneTableToBytes(unicode.Lo)
+		return compileUnicodePropertyCached("lo", func() node {
+			return compileRuneTableToBytes(unicode.Lo)
+		})
 	case "m", "mark":
-		return compileRuneTableToBytes(unicode.Mark)
+		return compileUnicodePropertyCached("mark", func() node {
+			return compileRuneTableToBytes(unicode.Mark)
+		})
 	case "mn":
-		return compileRuneTableToBytes(unicode.Mn)
+		return compileUnicodePropertyCached("mn", func() node {
+			return compileRuneTableToBytes(unicode.Mn)
+		})
 	case "mc":
-		return compileRuneTableToBytes(unicode.Mc)
+		return compileUnicodePropertyCached("mc", func() node {
+			return compileRuneTableToBytes(unicode.Mc)
+		})
 	case "me":
-		return compileRuneTableToBytes(unicode.Me)
+		return compileUnicodePropertyCached("me", func() node {
+			return compileRuneTableToBytes(unicode.Me)
+		})
 	case "nd", "digit", "number", "n":
-		return compileRuneTableToBytes(unicode.Digit)
+		return compileUnicodePropertyCached("nd", func() node {
+			return compileRuneTableToBytes(unicode.Digit)
+		})
 	case "nl":
-		return compileRuneTableToBytes(unicode.Nl)
+		return compileUnicodePropertyCached("nl", func() node {
+			return compileRuneTableToBytes(unicode.Nl)
+		})
 	case "no":
-		return compileRuneTableToBytes(unicode.No)
+		return compileUnicodePropertyCached("no", func() node {
+			return compileRuneTableToBytes(unicode.No)
+		})
 	case "z", "zs", "zl", "zp", "whitespace", "space":
-		return compileRuneTableToBytes(unicode.White_Space)
+		return compileUnicodePropertyCached("whitespace", func() node {
+			return compileRuneTableToBytes(unicode.White_Space)
+		})
 	case "pc":
-		return compileRuneTableToBytes(unicode.Pc)
+		return compileUnicodePropertyCached("pc", func() node {
+			return compileRuneTableToBytes(unicode.Pc)
+		})
 	case "joincontrol":
-		var rt unicode.RangeTable
-		rt.R16 = []unicode.Range16{{Lo: 0x200C, Hi: 0x200D, Stride: 1}}
-		return compileRuneTableToBytes(&rt)
+		return compileUnicodePropertyCached("joincontrol", func() node {
+			var rt unicode.RangeTable
+			rt.R16 = []unicode.Range16{{Lo: 0x200C, Hi: 0x200D, Stride: 1}}
+			return compileRuneTableToBytes(&rt)
+		})
 	default:
 		if tab, ok := unicode.Categories[strings.ToUpper(name)]; ok {
-			return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached("cat:"+strings.ToUpper(name), func() node {
+				return compileRuneTableToBytes(tab)
+			})
 		}
 		if tab, ok := unicode.Scripts[name]; ok {
-			return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached("script:"+name, func() node {
+				return compileRuneTableToBytes(tab)
+			})
 		}
 		if tab, ok := unicode.Properties[name]; ok {
-			return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached("prop:"+name, func() node {
+				return compileRuneTableToBytes(tab)
+			})
 		}
 		upperName := strings.ToUpper(name)
 		if tab, ok := unicode.Scripts[upperName]; ok {
-			return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached("script:"+upperName, func() node {
+				return compileRuneTableToBytes(tab)
+			})
 		}
 		if tab, ok := unicode.Properties[upperName]; ok {
-			return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached("prop:"+upperName, func() node {
+				return compileRuneTableToBytes(tab)
+			})
 		}
 		return &falseNode{}
 	}
+}
+
+func compileUnicodePropertyCached(key string, build func() node) node {
+	unicodePropertyCacheMu.RLock()
+	if cached, ok := unicodePropertyCache[key]; ok {
+		unicodePropertyCacheMu.RUnlock()
+		return cached
+	}
+	unicodePropertyCacheMu.RUnlock()
+
+	compiled := build()
+
+	unicodePropertyCacheMu.Lock()
+	if cached, ok := unicodePropertyCache[key]; ok {
+		unicodePropertyCacheMu.Unlock()
+		return cached
+	}
+	unicodePropertyCache[key] = compiled
+	unicodePropertyCacheMu.Unlock()
+	return compiled
 }
 
 func normalizeUnicodePropertyName(name string) string {
