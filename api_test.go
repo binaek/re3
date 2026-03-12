@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // build builds a [][]int from pairs: build(0, 0) => [][]int{{0, 0}}, build(0, 2, 5, 7) => [][]int{{0, 2}, {5, 7}}.
@@ -1416,6 +1418,197 @@ func BenchmarkCompareCompileComplexPat(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			regexp.MustCompile(pat)
+		}
+	})
+}
+
+func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("operation exceeded timeout %s", timeout)
+	}
+}
+
+func TestRuntimeTimeoutRegressions(t *testing.T) {
+	t.Run("cloudflare_simplified_long", func(t *testing.T) {
+		re := MustCompile(".*.*=.*")
+		haystack := "x=" + strings.Repeat("x", 2047)
+		runWithTimeout(t, 10*time.Second, func() {
+			locs := re.FindAllStringIndex(haystack, 32)
+			if len(locs) == 0 {
+				t.Fatalf("expected matches for cloudflare simplified-long pattern")
+			}
+		})
+	})
+
+	t.Run("reverse_inner_no_quadratic_forward", func(t *testing.T) {
+		re := MustCompile(".efghijklmnopq[a-z]+[A-Z]")
+		haystack := strings.Repeat("bcdefghijklmnopq", 500)
+		runWithTimeout(t, 5*time.Second, func() {
+			locs := re.FindAllStringIndex(haystack, -1)
+			if len(locs) != 0 {
+				t.Fatalf("expected no matches, got %d", len(locs))
+			}
+		})
+	})
+
+	t.Run("slow_quadratic_regex_1x", func(t *testing.T) {
+		re := MustCompile("(?:A+){100}|")
+		haystack := strings.Repeat("A", 20)
+		runWithTimeout(t, 2*time.Second, func() {
+			locs := re.FindAllStringIndex(haystack, 4)
+			if len(locs) == 0 {
+				t.Fatalf("expected at least one match")
+			}
+		})
+	})
+
+	t.Run("slow_quadratic_regex_2x", func(t *testing.T) {
+		re := MustCompile("(?:A+){200}|")
+		runWithTimeout(t, 2*time.Second, func() {
+			if !re.MatchString("") {
+				t.Fatalf("expected empty-branch match for quadratic-regex-2x")
+			}
+		})
+	})
+
+	t.Run("wild_url_shape_search", func(t *testing.T) {
+		pattern := "(?:(?:https?|ftp)://)?(?:[a-z0-9-]+\\.)+(?:com|org|net|io|dev|app|cloud|xyz|online|shop|site|blog)(?:/[a-z0-9/_\\-%.?=&+]*)?"
+		re := MustCompile(pattern)
+		haystack := strings.Repeat("https://example.com/path?q=1\n", 2000)
+		runWithTimeout(t, 2*time.Second, func() {
+			locs := re.FindAllStringIndex(haystack, -1)
+			if len(locs) == 0 {
+				t.Fatalf("expected URL-shape matches")
+			}
+		})
+	})
+}
+
+func TestUnicodeByteLowering(t *testing.T) {
+	t.Run("multibyte_literal_match", func(t *testing.T) {
+		re := MustCompile("é")
+		if !re.MatchString("é") {
+			t.Fatalf("expected multibyte literal to match")
+		}
+		if re.MatchString("e") {
+			t.Fatalf("did not expect ASCII e to match é")
+		}
+	})
+
+	t.Run("multibyte_concat", func(t *testing.T) {
+		re := MustCompile("aé")
+		if !re.MatchString("aé") {
+			t.Fatalf("expected concat with multibyte literal to match")
+		}
+		if re.MatchString("ae") {
+			t.Fatalf("did not expect ASCII concat to match")
+		}
+	})
+
+	t.Run("multibyte_find_index_is_byte_offsets", func(t *testing.T) {
+		re := MustCompile("é")
+		got := re.FindStringIndex("aéb")
+		want := []int{1, 3}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("FindStringIndex byte offsets = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("multibyte_repeat", func(t *testing.T) {
+		re := MustCompile("é+")
+		got := re.FindString("ééx")
+		if got != "éé" {
+			t.Fatalf("FindString for repeated multibyte literal = %q, want %q", got, "éé")
+		}
+	})
+}
+
+func TestUnicodeClassesAndRanges(t *testing.T) {
+	t.Run("unicode_range_class", func(t *testing.T) {
+		re := MustCompile("[À-ÿ]+")
+		got := re.FindString("xxéçyy")
+		if got != "éç" {
+			t.Fatalf("FindString([À-ÿ]+) = %q, want %q", got, "éç")
+		}
+	})
+
+	t.Run("unicode_property_letter", func(t *testing.T) {
+		re := MustCompile(`\p{L}+`)
+		got := re.FindString("123αβγ456")
+		if got != "αβγ" {
+			t.Fatalf("FindString(\\p{L}+) = %q, want %q", got, "αβγ")
+		}
+	})
+
+	t.Run("unicode_property_short_form", func(t *testing.T) {
+		re := MustCompile(`\pL+`)
+		got := re.FindString("123Δelta456")
+		if got != "Δelta" {
+			t.Fatalf("FindString(\\pL+) = %q, want %q", got, "Δelta")
+		}
+	})
+
+	t.Run("unicode_property_negation", func(t *testing.T) {
+		re := MustCompile(`\P{L}+`)
+		got := re.FindString("123é")
+		if got != "123" {
+			t.Fatalf("FindString(\\P{L}+) = %q, want %q", got, "123")
+		}
+	})
+
+	t.Run("unicode_script_property", func(t *testing.T) {
+		re := MustCompile(`\p{Greek}+`)
+		got := re.FindString("abcαβγxyz")
+		if got != "αβγ" {
+			t.Fatalf("FindString(\\p{Greek}+) = %q, want %q", got, "αβγ")
+		}
+	})
+
+	t.Run("unicode_case_insensitive_global", func(t *testing.T) {
+		re := MustCompile(`(?iu)привет`)
+		if !re.MatchString("Привет") {
+			t.Fatalf("expected (?iu)привет to match Привет")
+		}
+	})
+
+	t.Run("unicode_case_insensitive_scoped", func(t *testing.T) {
+		re := MustCompile(`(?iu:привет)`)
+		if !re.MatchString("Привет") {
+			t.Fatalf("expected (?iu:привет) to match Привет")
+		}
+	})
+
+	t.Run("unicode_word_boundary", func(t *testing.T) {
+		re := MustCompile(`\bπ\b`)
+		if got := re.FindString("aπb"); got != "π" {
+			t.Fatalf("FindString(\\bπ\\b) in ASCII word context = %q, want %q", got, "π")
+		}
+		if got := re.FindString(" π "); got != "" {
+			t.Fatalf("FindString(\\bπ\\b) in non-word boundaries = %q, want empty", got)
+		}
+	})
+
+	t.Run("unicode_word_boundary_connector_punctuation", func(t *testing.T) {
+		re := MustCompile(`(?u:\b)`)
+		got := re.FindAllStringIndex("⁀", -1)
+		if len(got) != 2 {
+			t.Fatalf("FindAllStringIndex((?u:\\b), %q) count = %d, want 2", "⁀", len(got))
+		}
+	})
+
+	t.Run("dot_rejects_invalid_utf8_byte", func(t *testing.T) {
+		re := MustCompile(`(?u:.)`)
+		invalid := []byte{0xFF}
+		if got := re.Find(invalid); got != nil {
+			t.Fatalf("expected dot to reject invalid utf8 byte, got %v", got)
 		}
 	})
 }

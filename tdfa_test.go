@@ -35,7 +35,7 @@ func TestInjectCaptureTags(t *testing.T) {
 func TestStepTDFA_Basic(t *testing.T) {
 	// stepTDFA(Lit('a'), 'a') -> one config: NextNode=Empty, Tags=nil
 	lit := &literalNode{Value: 'a'}
-	configs := stepTDFA(lit, 'a')
+	configs := stepTDFA(lit, 'a', matchContext{})
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'a') want 1 config, got %d", len(configs))
 	}
@@ -47,7 +47,7 @@ func TestStepTDFA_Basic(t *testing.T) {
 	}
 
 	// stepTDFA(Lit('a'), 'b') -> one config: NextNode=False
-	configs = stepTDFA(lit, 'b')
+	configs = stepTDFA(lit, 'b', matchContext{})
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'b') want 1 config, got %d", len(configs))
 	}
@@ -70,7 +70,7 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 		Right: &literalNode{Value: 'a'},
 	}
 	u := &unionNode{Left: tag1a, Right: tag2a}
-	configs := stepTDFA(u, 'a')
+	configs := stepTDFA(u, 'a', matchContext{})
 	if len(configs) < 2 {
 		t.Fatalf("stepTDFA(Union(Concat(Tag1,a), Concat(Tag2,a)), 'a') want at least 2 configs, got %d", len(configs))
 	}
@@ -121,7 +121,7 @@ func TestRunTDFA_AcceptingSetsCaptureZero(t *testing.T) {
 		t.Fatalf("CaptureCount want 1, got %d", re.CaptureCount)
 	}
 	tagged := injectCaptureTags(re.forward.root)
-	configs := stepTDFA(tagged, 'a')
+	configs := stepTDFA(tagged, 'a', matchContext{})
 	if len(configs) == 0 {
 		t.Fatalf("stepTDFA(taggedRoot, 'a') returned 0 configs (r might be wrong in getNextState)")
 	}
