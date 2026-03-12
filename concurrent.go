@@ -38,13 +38,6 @@ type concurrentRegExpImpl struct {
 
 func (c *concurrentRegExpImpl) Match(b []byte) bool {
 	c.mu.RLock()
-	if c.re.stdlib != nil {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		result := c.re.Match(b)
-		c.mu.Unlock()
-		return result
-	}
 	if c.re.hasAssertions {
 		c.mu.RUnlock()
 		c.mu.Lock()
@@ -77,13 +70,6 @@ func (c *concurrentRegExpImpl) Match(b []byte) bool {
 
 func (c *concurrentRegExpImpl) MatchString(s string) bool {
 	c.mu.RLock()
-	if c.re.stdlib != nil {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		result := c.re.MatchString(s)
-		c.mu.Unlock()
-		return result
-	}
 	if c.re.hasAssertions {
 		c.mu.RUnlock()
 		c.mu.Lock()
@@ -143,10 +129,10 @@ func (c *concurrentRegExpImpl) findStringIndexFrom(s string, from int) []int {
 // Returns (result, false) on success, (nil, true) on cache miss.
 func (c *concurrentRegExpImpl) findStringIndexCached(s string) ([]int, bool) {
 	re := c.re
-	if re.stdlib != nil {
+	if re.hasAssertions {
 		return nil, true
 	}
-	if re.hasAssertions {
+	if re.llOrLuRepeat > 0 {
 		return nil, true
 	}
 	if len(s) == 0 {
