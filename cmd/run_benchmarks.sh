@@ -136,7 +136,7 @@ else
 fi
 
 # Write initial manifest describing this run configuration.
-MANIFEST_PATH="${OUTDIR}/0a_manifest.csv"
+MANIFEST_PATH="${OUTDIR}/manifest.csv"
 cat > "$MANIFEST_PATH" <<EOF
 key,value
 start_at_utc,$START_AT_UTC
@@ -146,15 +146,18 @@ filter,${FILTER:-}
 EOF
 
 # Build the re3 engine, the regexp engine, and the rust/regex engine
-echo "Building re3 engine..."
-"$REBAR_CMD" build -e go/re3 || exit 1
-
-echo "Building regexp engine..."
-"$REBAR_CMD" build -e go/regexp || exit 1
+IFS_backup="$IFS"
+IFS='|'
+for engine in $ENGINES; do
+  engine_trimmed="$(echo "$engine" | xargs)"
+  echo "Building $engine_trimmed engine..."
+  "$REBAR_CMD" build -e "$engine_trimmed" || exit 1
+done
+IFS="$IFS_backup"
 
 # Run all benchmarks in one go; FILTER and ENGINES are passed through to rebar.
-ALL_RESULTS="${OUTDIR}/0b_all_results.csv"
-REPORT_PATH="${OUTDIR}/0c_report.md"
+ALL_RESULTS="${OUTDIR}/benchmarks.csv"
+REPORT_PATH="${OUTDIR}/report.md"
 
 echo "Running benchmarks..."
 "$REBAR_CMD" measure -e "$ENGINES" ${FILTER:+ -f "$FILTER"} | tee "$ALL_RESULTS"
@@ -167,23 +170,8 @@ END_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 echo "Generating report..."
 
-"$REBAR_CMD" report "$ALL_RESULTS" > "$REPORT_PATH"
+"$REBAR_CMD" report "$ALL_RESULTS" | tee "$REPORT_PATH"
 
 echo "Report generated at: $REPORT_PATH"
 
 echo "Done."
-
-# timeout filter: '^(curated|dictionary).*|dictionary/search/english-15$'
-# timeout regex: 
-#   Regex that will return only the following list:
-#        '(curated/03-date/ascii|curated/12-dictionary/compile-single|curated/12-dictionary/single|dictionary/compile/english-10|dictionary/compile/english-15|dictionary/search/english-15)'
-#   curated/03-date/ascii
-#   curated/12-dictionary/compile-single
-#   curated/12-dictionary/single
-#   dictionary/compile/english-10
-#   dictionary/compile/english-15
-#   dictionary/search/english-15
-
-
-
-
