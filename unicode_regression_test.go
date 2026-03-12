@@ -1,6 +1,10 @@
 package re3
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestUnicodeBenchmarkRegressionSubset(t *testing.T) {
 	tests := []struct {
@@ -63,5 +67,46 @@ func TestUnicodeBenchmarkRegressionSubset(t *testing.T) {
 				t.Fatalf("FindAllStringIndex(%q, %q) count = %d, want %d", tc.pat, tc.input, len(got), tc.want)
 			}
 		})
+	}
+}
+
+func TestInlineUnicodeCompileRegressions(t *testing.T) {
+	patterns := []string{
+		`(?u:\pL)`,
+		`(?u:[^a])`,
+		`(?iu:\p{Greek}+)`,
+	}
+	for _, pat := range patterns {
+		t.Run(pat, func(t *testing.T) {
+			if _, err := Compile(pat); err != nil {
+				t.Fatalf("Compile(%q) returned error: %v", pat, err)
+			}
+		})
+	}
+}
+
+func TestDictionaryLikeUnicodeAlternationCompiles(t *testing.T) {
+	words := []string{"Zubeneschamali", "ZwickauerDamm", "Zephyranthes", "Zimmerpflanze"}
+	alts := make([]string, 0, 2048)
+	for i := 0; i < 512; i++ {
+		alts = append(alts, words[i%len(words)])
+	}
+	pat := `(?u:(?:` + strings.Join(alts, "|") + `))`
+	runWithTimeout(t, 2*time.Second, func() {
+		if _, err := Compile(pat); err != nil {
+			t.Fatalf("Compile(dictionary-like pattern) returned error: %v", err)
+		}
+	})
+}
+
+func TestLowerOrUpperPropertyBehavior(t *testing.T) {
+	re := MustCompile(`(?u:\p{LlOrLu}+)`)
+	if got := re.FindString("abc XYZ"); got != "abc" {
+		t.Fatalf("expected lower-case segment to match, got %q", got)
+	}
+
+	// U+01C5 LATIN CAPITAL LETTER D WITH SMALL LETTER Z WITH CARON is titlecase.
+	if got := MustCompile(`(?u:\p{LlOrLu}+)`).FindString("ǅ"); got != "ǅ" {
+		t.Fatalf("expected titlecase letter to match LlOrLu, got %q", got)
 	}
 }
