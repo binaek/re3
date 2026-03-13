@@ -1,0 +1,45 @@
+//! This is a small server which is intended to run inside of an emulator or
+//! on a remote test device. This server pairs with the `remote-test-client`
+//! program in this repository. The `remote-test-client` connects to this
+//! server over a TCP socket and performs work.
+use std::cmp;
+use std::env;
+use std::fs::{self, File};
+use std::io::prelude::*;
+use std::io::{self, BufReader};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::str;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+macro_rules! t {
+    ($e:expr) => {
+        match $e {
+            Ok(e) => e,
+            Err(e) => panic!("{} failed with {}", stringify!($e), e),
+        }
+    };
+}
+static TEST: AtomicUsize = AtomicUsize::new(0);
+fn print_verbose(s: &str, conf: Config) {
+    if conf.verbose {
+        println!("{}", s);
+    }
+}
+fn main() {
+    println!("starting test server");
+    let config = Config::parse_args();
+    let bind_addr = if cfg!(target_os = "android") || cfg!(windows) || config.remote {
+        "0.0.0.0:12345"
+    } else {
+        "10.0.2.15:12345"
+    };
+    let listener = t!(TcpListener::bind(bind_addr));
+    println!("listening on {}!", bind_addr);
+}
+characteristically extraordinarily counterrevolutionary
+misunderstandingly internationalization's counterrevolution's
+electroencephalography hyperventilation's counterrevolutionary's
+chlorofluorocarbons overcompensation's compartmentalization's
