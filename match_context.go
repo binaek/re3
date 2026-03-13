@@ -6,12 +6,12 @@ import (
 )
 
 type matchContext struct {
-	AtStart                  bool
-	AtEnd                    bool
-	PrevIsWord               bool
-	NextIsWord               bool
-	PrevIsNewline            bool
-	NextIsNewline            bool
+	AtStart                   bool
+	AtEnd                     bool
+	PrevIsWord                bool
+	NextIsWord                bool
+	PrevIsNewline             bool
+	NextIsNewline             bool
 	AtEndAfterOptionalNewline bool
 }
 
@@ -33,20 +33,18 @@ func makeMatchContextString(s string, pos int) matchContext {
 		AtStart: pos == 0,
 		AtEnd:   pos >= len(s),
 	}
-	// If pos is inside a UTF-8 sequence, treat context as being within one rune.
-	// This suppresses false word-boundary transitions at non-boundary byte offsets.
-	if pos > 0 && pos < len(s) && !utf8.RuneStart(s[pos]) {
-		start := pos
-		for start > 0 && !utf8.RuneStart(s[start]) {
-			start--
+	// If pos is at a UTF-8 continuation byte (10xxxxxx), we are inside a multi-byte
+	// rune. Boundaries (^, $, \b, \B) cannot exist here, so we return a context
+	// that makes \b false and \B true without doing any rune decoding.
+	if pos > 0 && pos < len(s) {
+		b := s[pos]
+		if b&0xC0 == 0x80 { // continuation byte in UTF-8
+			ctx.PrevIsWord = true
+			ctx.NextIsWord = true
+			ctx.PrevIsNewline = false
+			ctx.NextIsNewline = false
+			return ctx
 		}
-		r, _ := utf8.DecodeRuneInString(s[start:])
-		w := isWordRune(r)
-		ctx.PrevIsWord = w
-		ctx.NextIsWord = w
-		ctx.PrevIsNewline = false
-		ctx.NextIsNewline = false
-		return ctx
 	}
 	if pos > 0 {
 		prev, _ := utf8.DecodeLastRuneInString(s[:pos])
@@ -66,4 +64,3 @@ func makeMatchContextString(s string, pos int) matchContext {
 	}
 	return ctx
 }
-
