@@ -2,6 +2,7 @@ package re3
 
 import (
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -67,8 +68,7 @@ type regexpImpl struct {
 // Match reports whether the byte slice b contains any match of the regular expression.
 func (re *regexpImpl) Match(b []byte) bool {
 	if re.hasAssertions {
-		loc := re.FindStringIndex(string(b))
-		return loc != nil && loc[0] == 0 && loc[1] == len(b)
+		return re.FindStringIndex(string(b)) != nil
 	}
 	state := 0
 	for pos := 0; pos < len(b); pos++ {
@@ -82,8 +82,7 @@ func (re *regexpImpl) Match(b []byte) bool {
 // regexpImpl is not safe for concurrent use; use Clone() per goroutine or Concurrent() for a thread-safe wrapper.
 func (re *regexpImpl) MatchString(s string) bool {
 	if re.hasAssertions {
-		loc := re.FindStringIndex(s)
-		return loc != nil && loc[0] == 0 && loc[1] == len(s)
+		return re.FindStringIndex(s) != nil
 	}
 	state := 0
 	for pos := 0; pos < len(s); pos++ {
@@ -113,6 +112,17 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 }
 
 func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
+	var (
+		startTime       time.Time
+		trackProfiling  = len(s) > 1_000_000
+		unanchoredSteps int
+		reverseSteps    int
+		forwardSteps    int
+	)
+	if trackProfiling {
+		startTime = time.Now()
+	}
+
 	if len(s) == 0 {
 		acceptsEmpty := re.forward.isAccepting(0)
 		if re.hasAssertions {
@@ -143,6 +153,9 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	if re.llOrLuRepeat > 0 {
 		return findLlOrLuRepeatFrom(s, from, re.llOrLuRepeat)
 	}
+	if re.hasAssertions {
+		return re.findStringIndexFromWithAssertions(s, from)
+	}
 
 	bytePos := from
 	if len(re.prefix) > 0 {
@@ -163,6 +176,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	}
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
+		unanchoredSteps++
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
 		if re.hasAssertions {
@@ -191,7 +205,8 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	revState := 0
 	leftmostStart := -1
 	bytePos = firstEnd
-	for bytePos > 0 {
+	for bytePos > from {
+		reverseSteps++
 		bytePos--
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
@@ -234,6 +249,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 
 	bytePos = leftmostStart
 	for bytePos < len(s) {
+		forwardSteps++
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
 		if re.hasAssertions {
@@ -254,7 +270,54 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 		bytePos++
 	}
 
-	return []int{leftmostStart, longestEnd}
+	match := []int{leftmostStart, longestEnd}
+
+	if trackProfiling {
+		durMs := time.Since(startTime).Milliseconds()
+		if durMs > 50 {
+			agentDebugLog("H-runtime-find", "regexp.go:115", "findStringIndexFrom profile", map[string]any{
+				"duration_ms":      durMs,
+				"len_s":            len(s),
+				"from":             from,
+				"first_end":        firstEnd,
+				"leftmost_start":   leftmostStart,
+				"longest_end":      longestEnd,
+				"unanchored_steps": unanchoredSteps,
+				"reverse_steps":    reverseSteps,
+				"forward_steps":    forwardSteps,
+			})
+		}
+	}
+
+	return match
+}
+
+func (re *regexpImpl) findStringIndexFromWithAssertions(s string, from int) []int {
+	for start := from; start <= len(s); start++ {
+		state := 0
+		longestEnd := -1
+
+		if re.forward.isAcceptingWithContext(0, makeMatchContextString(s, start)) {
+			longestEnd = start
+		}
+
+		for pos := start; pos < len(s); pos++ {
+			mintermID := re.minterms.ByteToClass[s[pos]]
+			ctx := makeMatchContextString(s, pos)
+			state = re.forward.getNextState(state, mintermID, ctx)
+			if state == re.forward.deadStateID {
+				break
+			}
+			if re.forward.isAcceptingWithContext(state, makeMatchContextString(s, pos+1)) {
+				longestEnd = pos + 1
+			}
+		}
+
+		if longestEnd >= 0 {
+			return []int{start, longestEnd}
+		}
+	}
+	return nil
 }
 
 func findLlOrLuRepeatFrom(s string, from, need int) []int {
@@ -325,30 +388,14 @@ func (re *regexpImpl) FindAll(b []byte, n int) [][]byte {
 // FindAllString is the 'All' version of FindString; it returns a slice of all successive matches of the expression.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAllString(s string, n int) []string {
-	var matches []string
-	pos := 0
-
-	for pos <= len(s) && (n < 0 || len(matches) < n) {
-		loc := re.findStringIndexFrom(s, pos)
-		if loc == nil {
-			break
-		}
-
-		start := loc[0]
-		end := loc[1]
-		matches = append(matches, s[start:end])
-
-		if end == start {
-			nextPos := advancePosAfterEmptyMatchString(s, start)
-			if nextPos <= pos {
-				nextPos = pos + 1
-			}
-			pos = nextPos
-		} else {
-			pos = end
-		}
+	locs := re.FindAllStringIndex(s, n)
+	if len(locs) == 0 {
+		return nil
 	}
-
+	matches := make([]string, len(locs))
+	for i, loc := range locs {
+		matches[i] = s[loc[0]:loc[1]]
+	}
 	return matches
 }
 
@@ -363,9 +410,23 @@ func (re *regexpImpl) FindAllIndex(b []byte, n int) [][]int {
 func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 	var matches [][]int
 	pos := 0
+	if n < 0 {
+		n = len(s) + 1
+	}
+	var (
+		allStart          time.Time
+		trackProfilingAll = len(s) > 1_000_000
+		callCount         int
+	)
+	if trackProfilingAll {
+		allStart = time.Now()
+	}
 
 	for pos <= len(s) && (n < 0 || len(matches) < n) {
 		loc := re.findStringIndexFrom(s, pos)
+		if trackProfilingAll {
+			callCount++
+		}
 		if loc == nil {
 			break
 		}
@@ -382,6 +443,18 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 			pos = nextPos
 		} else {
 			pos = end
+		}
+	}
+
+	if trackProfilingAll {
+		durMs := time.Since(allStart).Milliseconds()
+		if durMs > 50 {
+			agentDebugLog("H-runtime-all", "regexp.go:363", "FindAllStringIndex profile", map[string]any{
+				"duration_ms": durMs,
+				"len_s":       len(s),
+				"calls":       callCount,
+				"matches":     len(matches),
+			})
 		}
 	}
 
@@ -449,6 +522,9 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 }
 
 func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
+	if n < 0 {
+		n = len(b) + 1
+	}
 	locs := re.FindAllStringSubmatchIndex(string(b), n)
 	if len(locs) == 0 {
 		return nil
@@ -469,6 +545,9 @@ func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
 // FindAllStringSubmatch returns a slice of slices of strings: each inner slice is
 // the result of FindStringSubmatch for one match. If n >= 0, at most n matches are returned.
 func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
+	if n < 0 {
+		n = len(s) + 1
+	}
 	var out [][]string
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(out) < n) {

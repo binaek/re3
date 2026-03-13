@@ -28,7 +28,7 @@ type lazyDFA struct {
 }
 
 func newLazyDFA(root node, minterms *mintermTable) *lazyDFA {
-	dead := &falseNode{}
+	dead := newFalseNode()
 	dfa := &lazyDFA{
 		root:        root,
 		minterms:    minterms,
@@ -100,6 +100,13 @@ func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
 				newRow[i] = -1
 			}
 			dfa.transitions = append(dfa.transitions, newRow)
+			if len(dfa.stateASTs) == 10_000 || len(dfa.stateASTs) == 50_000 || len(dfa.stateASTs) == maxLazyDFAStates {
+				agentDebugLog("H-runtime-dfa", "compiler.go:78", "lazyDFA state growth with context", map[string]any{
+					"states":     len(dfa.stateASTs),
+					"minterm_id": mintermID,
+					"has_ctx":    true,
+				})
+			}
 		}
 		return nextStateID
 	}
@@ -134,6 +141,13 @@ func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
 			newRow[i] = -1
 		}
 		dfa.transitions = append(dfa.transitions, newRow)
+		if len(dfa.stateASTs) == 10_000 || len(dfa.stateASTs) == 50_000 || len(dfa.stateASTs) == maxLazyDFAStates {
+			agentDebugLog("H-runtime-dfa", "compiler.go:118", "lazyDFA state growth", map[string]any{
+				"states":     len(dfa.stateASTs),
+				"minterm_id": mintermID,
+				"has_ctx":    false,
+			})
+		}
 	}
 	row[mintermID] = nextStateID
 	return nextStateID
@@ -350,6 +364,7 @@ func buildMintermTable(ast node) *mintermTable {
 			table.ByteToClass[b] = classID
 		}
 	}
+
 	return table
 }
 
