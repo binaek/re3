@@ -1422,20 +1422,6 @@ func BenchmarkCompareCompileComplexPat(b *testing.B) {
 	})
 }
 
-func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		fn()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(timeout):
-		t.Fatalf("operation exceeded timeout %s", timeout)
-	}
-}
-
 func TestRuntimeTimeoutRegressions(t *testing.T) {
 	t.Run("cloudflare_simplified_long", func(t *testing.T) {
 		re := MustCompile(".*.*=.*")
