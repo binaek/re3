@@ -21,22 +21,22 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 		if nd.Value == c {
 			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 	case *charClassNode:
 		p := parseCharClass(nd.Class)
 		if p[c] {
 			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 	case *anyNode:
 		if c == '\n' {
-			return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 		}
 		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 	case *falseNode:
-		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 	case *emptyNode:
-		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 	case *tagNode:
 		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 	case *unionNode:
@@ -69,7 +69,7 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 					tags[len(lc.Tags)] = tagOp{Id: t.Id, IsStart: t.IsStart}
 				}
 			} else {
-				next = &concatNode{Left: lc.NextNode, Right: nd.Right}
+				next = newConcatNode(lc.NextNode, nd.Right)
 			}
 			result = append(result, tdfaConfig{NextNode: next, Tags: tags})
 		}
@@ -82,7 +82,7 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 				result = append(result, tdfaConfig{NextNode: nd, Tags: cc.Tags})
 			} else {
 				result = append(result, tdfaConfig{
-					NextNode: &concatNode{Left: cc.NextNode, Right: nd},
+					NextNode: newConcatNode(cc.NextNode, nd),
 					Tags:     cc.Tags,
 				})
 			}
@@ -92,7 +92,7 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 		return stepTDFA(nd.Child, c, ctx)
 	case *repeatNode:
 		if nd.Max == 0 {
-			return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 		}
 		nextMin := nd.Min - 1
 		if nextMin < 0 {
@@ -182,7 +182,7 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 		if nd.Nullable(ctx) {
 			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &falseNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
 	default:
 		return nil
 	}

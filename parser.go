@@ -46,8 +46,12 @@ func newParser(tokens []token, expr string) *parser {
 		tokenEmpty:                  func() (node, error) { return &emptyNode{}, nil },
 		tokenStart:                  func() (node, error) { return &startNode{}, nil },
 		tokenEnd:                    func() (node, error) { return &endNode{}, nil },
-		tokenWordBoundary:           func() (node, error) { return &wordBoundaryNode{}, nil },
-		tokenNotWordBoundary:        func() (node, error) { return &notWordBoundaryNode{}, nil },
+		tokenWordBoundary: func() (node, error) {
+			return &wordBoundaryNode{Unicode: p.unicodeMode}, nil
+		},
+		tokenNotWordBoundary: func() (node, error) {
+			return &notWordBoundaryNode{Unicode: p.unicodeMode}, nil
+		},
 		tokenBeginText:              func() (node, error) { return &beginTextNode{}, nil },
 		tokenEndText:                func() (node, error) { return &endTextNode{}, nil },
 		tokenEndTextOptionalNewline: func() (node, error) { return &endTextOptionalNewlineNode{}, nil },

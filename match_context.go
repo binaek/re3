@@ -8,8 +8,10 @@ import (
 type matchContext struct {
 	AtStart                   bool
 	AtEnd                     bool
-	PrevIsWord                bool
-	NextIsWord                bool
+	PrevIsWord                bool // Unicode-aware word classification.
+	NextIsWord                bool // Unicode-aware word classification.
+	PrevIsASCIIWord           bool // ASCII-only word classification.
+	NextIsASCIIWord           bool // ASCII-only word classification.
 	PrevIsNewline             bool
 	NextIsNewline             bool
 	AtEndAfterOptionalNewline bool
@@ -20,6 +22,10 @@ func isWordRune(r rune) bool {
 		return true
 	}
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || unicode.Is(unicode.Pc, r)
+}
+
+func isASCIIWordRune(r rune) bool {
+	return r == '_' || ('0' <= r && r <= '9') || ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z')
 }
 
 func makeMatchContextString(s string, pos int) matchContext {
@@ -41,6 +47,8 @@ func makeMatchContextString(s string, pos int) matchContext {
 		if b&0xC0 == 0x80 { // continuation byte in UTF-8
 			ctx.PrevIsWord = true
 			ctx.NextIsWord = true
+			ctx.PrevIsASCIIWord = true
+			ctx.NextIsASCIIWord = true
 			ctx.PrevIsNewline = false
 			ctx.NextIsNewline = false
 			return ctx
@@ -49,11 +57,13 @@ func makeMatchContextString(s string, pos int) matchContext {
 	if pos > 0 {
 		prev, _ := utf8.DecodeLastRuneInString(s[:pos])
 		ctx.PrevIsWord = isWordRune(prev)
+		ctx.PrevIsASCIIWord = isASCIIWordRune(prev)
 		ctx.PrevIsNewline = prev == '\n'
 	}
 	if pos < len(s) {
 		next, size := utf8.DecodeRuneInString(s[pos:])
 		ctx.NextIsWord = isWordRune(next)
+		ctx.NextIsASCIIWord = isASCIIWordRune(next)
 		ctx.NextIsNewline = next == '\n'
 		if ctx.NextIsNewline && pos+size == len(s) {
 			ctx.AtEndAfterOptionalNewline = true

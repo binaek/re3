@@ -12,32 +12,47 @@ type node interface {
 }
 
 // --- BASE NODES ---
-type falseNode struct{}
+type falseNode struct {
+	fp uint64
+}
+
+func newFalseNode() *falseNode {
+	return &falseNode{fp: mixFingerprint(fingerprintSeed, 1)}
+}
 
 func (n *falseNode) Nullable(_ matchContext) bool           { return false }
 func (n *falseNode) Derivative(b byte, _ matchContext) node { return n }
 func (n *falseNode) Equals(other node) bool                 { _, ok := other.(*falseNode); return ok }
 func (n *falseNode) Reverse() node                          { return n }
 func (n *falseNode) String() string                         { return "False" }
-func (n *falseNode) FingerPrint() uint64                    { return mixFingerprint(fingerprintSeed, 1) }
+func (n *falseNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 1)
+}
 
-type emptyNode struct{}
+type emptyNode struct {
+	fp uint64
+}
 
 func (n *emptyNode) Nullable(_ matchContext) bool           { return true }
-func (n *emptyNode) Derivative(b byte, _ matchContext) node { return &falseNode{} }
+func (n *emptyNode) Derivative(b byte, _ matchContext) node { return newFalseNode() }
 func (n *emptyNode) Equals(other node) bool                 { _, ok := other.(*emptyNode); return ok }
 func (n *emptyNode) Reverse() node                          { return n }
 func (n *emptyNode) String() string                         { return "Empty" }
-func (n *emptyNode) FingerPrint() uint64                    { return mixFingerprint(fingerprintSeed, 2) }
+func (n *emptyNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 2)
+}
 
-type literalNode struct{ Value byte }
+type literalNode struct {
+	Value byte
+	fp    uint64
+}
 
 func (n *literalNode) Nullable(_ matchContext) bool { return false }
 func (n *literalNode) Derivative(b byte, _ matchContext) node {
 	if b == n.Value {
 		return &emptyNode{}
 	}
-	return &falseNode{}
+	return newFalseNode()
 }
 func (n *literalNode) Equals(other node) bool {
 	o, ok := other.(*literalNode)
@@ -49,35 +64,44 @@ func (n *literalNode) FingerPrint() uint64 {
 	return mixFingerprint(mixFingerprint(fingerprintSeed, 3), uint64(n.Value))
 }
 
-type anyNode struct{}
+type anyNode struct {
+	fp uint64
+}
 
 func (n *anyNode) Nullable(_ matchContext) bool { return false }
 func (n *anyNode) Derivative(b byte, _ matchContext) node {
 	// Match any rune except newline, aligning with Go regexp (dot does not match \n by default).
 	if b == '\n' {
-		return &falseNode{}
+		return newFalseNode()
 	}
 	return &emptyNode{}
 }
 func (n *anyNode) Equals(other node) bool { _, ok := other.(*anyNode); return ok }
 func (n *anyNode) Reverse() node          { return n }
 func (n *anyNode) String() string         { return "Any" }
-func (n *anyNode) FingerPrint() uint64    { return mixFingerprint(fingerprintSeed, 4) }
+func (n *anyNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 4)
+}
 
 // anyByteNode is an internal helper used for unanchored search pre-scan.
 // It consumes exactly one byte (including '\n').
-type anyByteNode struct{}
+type anyByteNode struct {
+	fp uint64
+}
 
 func (n *anyByteNode) Nullable(_ matchContext) bool           { return false }
 func (n *anyByteNode) Derivative(b byte, _ matchContext) node { return &emptyNode{} }
 func (n *anyByteNode) Equals(other node) bool                 { _, ok := other.(*anyByteNode); return ok }
 func (n *anyByteNode) Reverse() node                          { return n }
 func (n *anyByteNode) String() string                         { return "AnyByte" }
-func (n *anyByteNode) FingerPrint() uint64                    { return mixFingerprint(fingerprintSeed, 23) }
+func (n *anyByteNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 23)
+}
 
 type charClassNode struct {
 	Class string
 	Pred  predicate
+	fp    uint64
 }
 
 func (n *charClassNode) Nullable(_ matchContext) bool { return false }
@@ -89,7 +113,7 @@ func (n *charClassNode) Derivative(b byte, _ matchContext) node {
 	if p[b] {
 		return &emptyNode{}
 	}
-	return &falseNode{}
+	return newFalseNode()
 }
 func (n *charClassNode) Equals(other node) bool {
 	o, ok := other.(*charClassNode)
@@ -117,7 +141,10 @@ func (n *charClassNode) FingerPrint() uint64 {
 
 // --- SET-FLATTENED BOOLEAN OPERATORS ---
 
-type unionNode struct{ Left, Right node }
+type unionNode struct {
+	Left, Right node
+	fp          uint64
+}
 
 func newUnionNode(left, right node) node {
 	if _, isFalse := left.(*falseNode); isFalse {
@@ -164,7 +191,10 @@ func (n *unionNode) FingerPrint() uint64 {
 	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 6), n.Left.FingerPrint()), n.Right.FingerPrint())
 }
 
-type intersectNode struct{ Left, Right node }
+type intersectNode struct {
+	Left, Right node
+	fp          uint64
+}
 
 func newIntersectNode(left, right node) node {
 	if _, isFalse := left.(*falseNode); isFalse {
@@ -211,13 +241,19 @@ func (n *intersectNode) FingerPrint() uint64 {
 	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 7), n.Left.FingerPrint()), n.Right.FingerPrint())
 }
 
-type complementNode struct{ Child node }
+type complementNode struct {
+	Child node
+	fp    uint64
+}
 
 func newComplementNode(child node) node {
 	if inner, ok := child.(*complementNode); ok {
 		return inner.Child
 	}
-	return &complementNode{child}
+	return &complementNode{
+		Child: child,
+		fp:    mixFingerprint(mixFingerprint(fingerprintSeed, 8), child.FingerPrint()),
+	}
 }
 func (n *complementNode) Nullable(ctx matchContext) bool { return !n.Child.Nullable(ctx) }
 func (n *complementNode) Derivative(b byte, ctx matchContext) node {
@@ -234,14 +270,17 @@ func (n *complementNode) FingerPrint() uint64 {
 }
 
 // --- CONCAT, STAR & GROUPS ---
-type concatNode struct{ Left, Right node }
+type concatNode struct {
+	Left, Right node
+	fp          uint64
+}
 
 func newConcatNode(left, right node) node {
 	if _, ok := right.(*falseNode); ok {
-		return &falseNode{}
+		return newFalseNode()
 	}
 	if _, ok := left.(*falseNode); ok {
-		return &falseNode{}
+		return newFalseNode()
 	}
 	if _, ok := left.(*emptyNode); ok {
 		return right
@@ -249,7 +288,11 @@ func newConcatNode(left, right node) node {
 	if _, ok := right.(*emptyNode); ok {
 		return left
 	}
-	return &concatNode{left, right}
+	return &concatNode{
+		Left:  left,
+		Right: right,
+		fp:    mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 9), left.FingerPrint()), right.FingerPrint()),
+	}
 }
 func (n *concatNode) Nullable(ctx matchContext) bool {
 	return n.Left.Nullable(ctx) && n.Right.Nullable(ctx)
@@ -273,7 +316,10 @@ func (n *concatNode) FingerPrint() uint64 {
 	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 9), n.Left.FingerPrint()), n.Right.FingerPrint())
 }
 
-type starNode struct{ Child node }
+type starNode struct {
+	Child node
+	fp    uint64
+}
 
 func (n *starNode) Nullable(_ matchContext) bool { return true }
 func (n *starNode) Derivative(b byte, ctx matchContext) node {
@@ -294,6 +340,7 @@ type repeatNode struct {
 	Child node
 	Min   int
 	Max   int
+	fp    uint64
 }
 
 func newRepeatNode(child node, min, max int) node {
@@ -307,12 +354,17 @@ func newRepeatNode(child node, min, max int) node {
 		if min == 0 {
 			return &emptyNode{}
 		}
-		return &falseNode{}
+		return newFalseNode()
 	}
 	if _, isEmpty := child.(*emptyNode); isEmpty {
 		return &emptyNode{}
 	}
-	return &repeatNode{Child: child, Min: min, Max: max}
+	return &repeatNode{
+		Child: child,
+		Min:   min,
+		Max:   max,
+		fp:    mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 11), child.FingerPrint()), uint64(min+1+max+1)),
+	}
 }
 
 func (n *repeatNode) String() string {
@@ -375,15 +427,13 @@ func (n *repeatNode) Reverse() node {
 	return newRepeatNode(n.Child.Reverse(), n.Min, n.Max)
 }
 func (n *repeatNode) FingerPrint() uint64 {
-	h := mixFingerprint(fingerprintSeed, 11)
-	h = mixFingerprint(h, n.Child.FingerPrint())
-	h = mixFingerprint(h, uint64(n.Min+1))
-	return mixFingerprint(h, uint64(n.Max+1))
+	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 11), n.Child.FingerPrint()), uint64(n.Min+1+n.Max+1))
 }
 
 type groupNode struct {
 	GroupID int
 	Child   node
+	fp      uint64
 }
 
 func (n *groupNode) Nullable(ctx matchContext) bool           { return n.Child.Nullable(ctx) }
@@ -395,11 +445,14 @@ func (n *groupNode) Equals(other node) bool {
 func (n *groupNode) Reverse() node  { return &groupNode{GroupID: n.GroupID, Child: n.Child.Reverse()} }
 func (n *groupNode) String() string { return fmt.Sprintf("Group%d(%s)", n.GroupID, n.Child.String()) }
 func (n *groupNode) FingerPrint() uint64 {
-	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 12), uint64(n.GroupID+1)), n.Child.FingerPrint())
+	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 12), uint64(n.GroupID)), n.Child.FingerPrint())
 }
 
 // lookAheadNode is (?=R). Zero-width; does not consume input. Foundation for TDFA.
-type lookAheadNode struct{ Child node }
+type lookAheadNode struct {
+	Child node
+	fp    uint64
+}
 
 func (n *lookAheadNode) Nullable(ctx matchContext) bool { return n.Child.Nullable(ctx) }
 func (n *lookAheadNode) Derivative(b byte, ctx matchContext) node {
@@ -416,7 +469,10 @@ func (n *lookAheadNode) FingerPrint() uint64 {
 }
 
 // lookBehindNode is (?<=R). Zero-width; foundation for TDFA.
-type lookBehindNode struct{ Child node }
+type lookBehindNode struct {
+	Child node
+	fp    uint64
+}
 
 func (n *lookBehindNode) Nullable(ctx matchContext) bool { return n.Child.Nullable(ctx) }
 func (n *lookBehindNode) Derivative(b byte, ctx matchContext) node {
@@ -439,6 +495,7 @@ func (n *lookBehindNode) FingerPrint() uint64 {
 type tagNode struct {
 	Id      int
 	IsStart bool
+	fp      uint64
 }
 
 func (n *tagNode) Nullable(_ matchContext) bool       { return true }
@@ -455,50 +512,67 @@ func (n *tagNode) String() string {
 	return fmt.Sprintf("Tag(%d,end)", n.Id)
 }
 func (n *tagNode) FingerPrint() uint64 {
-	h := mixFingerprint(mixFingerprint(fingerprintSeed, 15), uint64(n.Id+1))
 	if n.IsStart {
-		return mixFingerprint(h, 1)
+		return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 15), uint64(n.Id)), 1)
 	}
-	return mixFingerprint(h, 0)
+	return mixFingerprint(mixFingerprint(mixFingerprint(fingerprintSeed, 15), uint64(n.Id)), 0)
 }
 
-type startNode struct{}
+type startNode struct {
+	fp uint64
+}
 
 func (n *startNode) Nullable(ctx matchContext) bool     { return ctx.AtStart || ctx.PrevIsNewline }
 func (n *startNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *startNode) Equals(other node) bool             { _, ok := other.(*startNode); return ok }
 func (n *startNode) Reverse() node                      { return &endNode{} }
 func (n *startNode) String() string                     { return "Start" }
-func (n *startNode) FingerPrint() uint64                { return mixFingerprint(fingerprintSeed, 16) }
+func (n *startNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 16)
+}
 
-type endNode struct{}
+type endNode struct {
+	fp uint64
+}
 
 func (n *endNode) Nullable(ctx matchContext) bool     { return ctx.AtEnd || ctx.NextIsNewline }
 func (n *endNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *endNode) Equals(other node) bool             { _, ok := other.(*endNode); return ok }
 func (n *endNode) Reverse() node                      { return &startNode{} }
 func (n *endNode) String() string                     { return "End" }
-func (n *endNode) FingerPrint() uint64                { return mixFingerprint(fingerprintSeed, 17) }
+func (n *endNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 17)
+}
 
-type beginTextNode struct{}
+type beginTextNode struct {
+	fp uint64
+}
 
 func (n *beginTextNode) Nullable(ctx matchContext) bool     { return ctx.AtStart }
 func (n *beginTextNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *beginTextNode) Equals(other node) bool             { _, ok := other.(*beginTextNode); return ok }
 func (n *beginTextNode) Reverse() node                      { return &endTextNode{} }
 func (n *beginTextNode) String() string                     { return "BeginText" }
-func (n *beginTextNode) FingerPrint() uint64                { return mixFingerprint(fingerprintSeed, 18) }
+func (n *beginTextNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 18)
+}
 
-type endTextNode struct{}
+type endTextNode struct {
+	fp uint64
+}
 
 func (n *endTextNode) Nullable(ctx matchContext) bool     { return ctx.AtEnd }
 func (n *endTextNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *endTextNode) Equals(other node) bool             { _, ok := other.(*endTextNode); return ok }
 func (n *endTextNode) Reverse() node                      { return &beginTextNode{} }
 func (n *endTextNode) String() string                     { return "EndText" }
-func (n *endTextNode) FingerPrint() uint64                { return mixFingerprint(fingerprintSeed, 19) }
+func (n *endTextNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 19)
+}
 
-type endTextOptionalNewlineNode struct{}
+type endTextOptionalNewlineNode struct {
+	fp uint64
+}
 
 func (n *endTextOptionalNewlineNode) Nullable(ctx matchContext) bool {
 	return ctx.AtEndAfterOptionalNewline
@@ -508,37 +582,72 @@ func (n *endTextOptionalNewlineNode) Equals(other node) bool {
 	_, ok := other.(*endTextOptionalNewlineNode)
 	return ok
 }
-func (n *endTextOptionalNewlineNode) Reverse() node       { return &beginTextNode{} }
-func (n *endTextOptionalNewlineNode) String() string      { return "EndTextOptionalNewline" }
-func (n *endTextOptionalNewlineNode) FingerPrint() uint64 { return mixFingerprint(fingerprintSeed, 20) }
+func (n *endTextOptionalNewlineNode) Reverse() node  { return &beginTextNode{} }
+func (n *endTextOptionalNewlineNode) String() string { return "EndTextOptionalNewline" }
+func (n *endTextOptionalNewlineNode) FingerPrint() uint64 {
+	return mixFingerprint(fingerprintSeed, 20)
+}
 
-type wordBoundaryNode struct{}
+type wordBoundaryNode struct {
+	Unicode bool
+	fp      uint64
+}
 
 func (n *wordBoundaryNode) Nullable(ctx matchContext) bool {
-	return ctx.PrevIsWord != ctx.NextIsWord
+	if n.Unicode {
+		return ctx.PrevIsWord != ctx.NextIsWord
+	}
+	return ctx.PrevIsASCIIWord != ctx.NextIsASCIIWord
 }
 func (n *wordBoundaryNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *wordBoundaryNode) Equals(other node) bool {
-	_, ok := other.(*wordBoundaryNode)
-	return ok
+	o, ok := other.(*wordBoundaryNode)
+	return ok && n.Unicode == o.Unicode
 }
-func (n *wordBoundaryNode) Reverse() node       { return n }
-func (n *wordBoundaryNode) String() string      { return "WordBoundary" }
-func (n *wordBoundaryNode) FingerPrint() uint64 { return mixFingerprint(fingerprintSeed, 21) }
+func (n *wordBoundaryNode) Reverse() node { return n }
+func (n *wordBoundaryNode) String() string {
+	if n.Unicode {
+		return "WordBoundaryU"
+	}
+	return "WordBoundary"
+}
+func (n *wordBoundaryNode) FingerPrint() uint64 {
+	if n.Unicode {
+		return mixFingerprint(mixFingerprint(fingerprintSeed, 21), 1)
+	}
+	return mixFingerprint(mixFingerprint(fingerprintSeed, 21), 0)
+}
 
-type notWordBoundaryNode struct{}
+type notWordBoundaryNode struct {
+	Unicode bool
+	fp      uint64
+}
 
 func (n *notWordBoundaryNode) Nullable(ctx matchContext) bool {
-	return ctx.PrevIsWord == ctx.NextIsWord
+	if n.Unicode {
+		return ctx.PrevIsWord == ctx.NextIsWord
+	}
+	return ctx.PrevIsASCIIWord == ctx.NextIsASCIIWord
 }
 func (n *notWordBoundaryNode) Derivative(byte, matchContext) node { return &falseNode{} }
 func (n *notWordBoundaryNode) Equals(other node) bool {
-	_, ok := other.(*notWordBoundaryNode)
-	return ok
+	o, ok := other.(*notWordBoundaryNode)
+	return ok && n.Unicode == o.Unicode
 }
-func (n *notWordBoundaryNode) Reverse() node       { return n }
-func (n *notWordBoundaryNode) String() string      { return "NotWordBoundary" }
-func (n *notWordBoundaryNode) FingerPrint() uint64 { return mixFingerprint(fingerprintSeed, 22) }
+func (n *notWordBoundaryNode) Reverse() node { return n }
+func (n *notWordBoundaryNode) String() string {
+	if n.Unicode {
+		return "NotWordBoundaryU"
+	}
+	return "NotWordBoundary"
+}
+func (n *notWordBoundaryNode) FingerPrint() uint64 {
+	if n.Unicode {
+		return mixFingerprint(mixFingerprint(fingerprintSeed, 22), 1)
+	}
+	return mixFingerprint(mixFingerprint(fingerprintSeed, 22), 0)
+}
+
 
 func containsAssertions(n node) bool {
 	switch nd := n.(type) {
