@@ -2,7 +2,6 @@ package re3
 
 import (
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -112,17 +111,6 @@ func (re *regexpImpl) FindStringIndex(s string) []int {
 }
 
 func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
-	var (
-		startTime       time.Time
-		trackProfiling  = len(s) > 1_000_000
-		unanchoredSteps int
-		reverseSteps    int
-		forwardSteps    int
-	)
-	if trackProfiling {
-		startTime = time.Now()
-	}
-
 	if len(s) == 0 {
 		acceptsEmpty := re.forward.isAccepting(0)
 		if re.hasAssertions {
@@ -176,7 +164,6 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	}
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
-		unanchoredSteps++
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
 		if re.hasAssertions {
@@ -206,7 +193,6 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	leftmostStart := -1
 	bytePos = firstEnd
 	for bytePos > from {
-		reverseSteps++
 		bytePos--
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
@@ -249,7 +235,6 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 
 	bytePos = leftmostStart
 	for bytePos < len(s) {
-		forwardSteps++
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		ctx := matchContext{}
 		if re.hasAssertions {
@@ -270,26 +255,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 		bytePos++
 	}
 
-	match := []int{leftmostStart, longestEnd}
-
-	if trackProfiling {
-		durMs := time.Since(startTime).Milliseconds()
-		if durMs > 50 {
-			agentDebugLog("H-runtime-find", "regexp.go:115", "findStringIndexFrom profile", map[string]any{
-				"duration_ms":      durMs,
-				"len_s":            len(s),
-				"from":             from,
-				"first_end":        firstEnd,
-				"leftmost_start":   leftmostStart,
-				"longest_end":      longestEnd,
-				"unanchored_steps": unanchoredSteps,
-				"reverse_steps":    reverseSteps,
-				"forward_steps":    forwardSteps,
-			})
-		}
-	}
-
-	return match
+	return []int{leftmostStart, longestEnd}
 }
 
 func (re *regexpImpl) findStringIndexFromWithAssertions(s string, from int) []int {
@@ -413,20 +379,9 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 	if n < 0 {
 		n = len(s) + 1
 	}
-	var (
-		allStart          time.Time
-		trackProfilingAll = len(s) > 1_000_000
-		callCount         int
-	)
-	if trackProfilingAll {
-		allStart = time.Now()
-	}
 
 	for pos <= len(s) && (n < 0 || len(matches) < n) {
 		loc := re.findStringIndexFrom(s, pos)
-		if trackProfilingAll {
-			callCount++
-		}
 		if loc == nil {
 			break
 		}
@@ -443,18 +398,6 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 			pos = nextPos
 		} else {
 			pos = end
-		}
-	}
-
-	if trackProfilingAll {
-		durMs := time.Since(allStart).Milliseconds()
-		if durMs > 50 {
-			agentDebugLog("H-runtime-all", "regexp.go:363", "FindAllStringIndex profile", map[string]any{
-				"duration_ms": durMs,
-				"len_s":       len(s),
-				"calls":       callCount,
-				"matches":     len(matches),
-			})
 		}
 	}
 
