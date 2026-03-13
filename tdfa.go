@@ -365,7 +365,7 @@ func (dfa *lazyTDFA) getNextState(stateID, mintermID int, ctx matchContext) (nex
 }
 
 func (dfa *lazyTDFA) lookupState(candidate node) int {
-	fp := fingerprintNode(candidate)
+	fp := candidate.FingerPrint()
 	bucket := dfa.stateIndex[fp]
 	for _, stateID := range bucket {
 		if dfa.stateASTs[stateID].Equals(candidate) {
@@ -376,7 +376,7 @@ func (dfa *lazyTDFA) lookupState(candidate node) int {
 }
 
 func (dfa *lazyTDFA) indexState(stateID int, ast node) {
-	fp := fingerprintNode(ast)
+	fp := ast.FingerPrint()
 	dfa.stateIndex[fp] = append(dfa.stateIndex[fp], stateID)
 }
 

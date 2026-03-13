@@ -37,11 +37,11 @@ func TestTDFANotBuiltUntilSubmatch(t *testing.T) {
 
 func TestLeftmostLongest(t *testing.T) {
 	tests := []struct {
-		name   string
-		pat    string
-		s      string
-		first  []int   // FindStringIndex: [start, end]
-		all    [][]int // FindAllStringIndex
+		name  string
+		pat   string
+		s     string
+		first []int   // FindStringIndex: [start, end]
+		all   [][]int // FindAllStringIndex
 	}{
 		{
 			name:  "a+ leftmost longest",

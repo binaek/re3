@@ -7,8 +7,8 @@ import (
 )
 
 var (
-	unicodeCategoryLl = unicode.Categories["Ll"]
-	unicodeCategoryLu = unicode.Categories["Lu"]
+	unicodeCategoryLl    = unicode.Categories["Ll"]
+	unicodeCategoryLu    = unicode.Categories["Lu"]
 	unicodePropertyLower = func() *unicode.RangeTable {
 		if tab, ok := unicode.Properties["Lowercase"]; ok {
 			return tab
@@ -53,15 +53,15 @@ func advancePosAfterEmptyMatchBytes(b []byte, pos int) int {
 
 // regexpImpl is the default lock-free implementation of RegExp.
 type regexpImpl struct {
-	minterms     *mintermTable
-	forward      *lazyDFA
-	unanchored   *lazyDFA
-	reverse      *lazyDFA
-	prefix       string    // optional literal prefix for Find fast-forward; empty means none
-	CaptureCount int       // number of capture groups (GroupNodes)
-	forwardTDFA  *lazyTDFA // built lazily when a submatch API is used
+	minterms      *mintermTable
+	forward       *lazyDFA
+	unanchored    *lazyDFA
+	reverse       *lazyDFA
+	prefix        string    // optional literal prefix for Find fast-forward; empty means none
+	CaptureCount  int       // number of capture groups (GroupNodes)
+	forwardTDFA   *lazyTDFA // built lazily when a submatch API is used
 	hasAssertions bool
-	llOrLuRepeat int
+	llOrLuRepeat  int
 }
 
 // Match reports whether the byte slice b contains any match of the regular expression.
@@ -720,14 +720,14 @@ func (re *regexpImpl) ReplaceAllString(s, repl string) string {
 // lazy DFA caches. Safe to use the original and clone in different goroutines.
 func (re *regexpImpl) Clone() RegExp {
 	return &regexpImpl{
-		minterms:     re.minterms,
-		forward:      newLazyDFA(re.forward.root, re.minterms),
-		unanchored:   newLazyDFA(re.unanchored.root, re.minterms),
-		reverse:      newLazyDFA(re.reverse.root, re.minterms),
-		prefix:       re.prefix,
-		CaptureCount: re.CaptureCount,
+		minterms:      re.minterms,
+		forward:       newLazyDFA(re.forward.root, re.minterms),
+		unanchored:    newLazyDFA(re.unanchored.root, re.minterms),
+		reverse:       newLazyDFA(re.reverse.root, re.minterms),
+		prefix:        re.prefix,
+		CaptureCount:  re.CaptureCount,
 		hasAssertions: re.hasAssertions,
-		llOrLuRepeat: re.llOrLuRepeat,
+		llOrLuRepeat:  re.llOrLuRepeat,
 		// forwardTDFA not copied; built on first submatch use
 	}
 }

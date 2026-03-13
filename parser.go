@@ -18,43 +18,43 @@ const (
 )
 
 type parser struct {
-	tokens         []token
-	pos            int
-	curToken       token
-	peekToken      token
-	groupCount     int
-	expr           string
+	tokens          []token
+	pos             int
+	curToken        token
+	peekToken       token
+	groupCount      int
+	expr            string
 	caseInsensitive bool
 	dotAll          bool
 	unicodeMode     bool
-	prefixParseFns map[tokenType]func() (node, error)
-	infixParseFns  map[tokenType]func(node) (node, error)
+	prefixParseFns  map[tokenType]func() (node, error)
+	infixParseFns   map[tokenType]func(node) (node, error)
 }
 
 func newParser(tokens []token, expr string) *parser {
 	p := &parser{tokens: tokens, pos: -1, expr: expr}
 	p.prefixParseFns = map[tokenType]func() (node, error){
-		tokenLiteral:     p.parseLiteral,
-		tokenEscape:      p.parseEscape,
-		tokenCharClass:   p.parseCharClass,
-		tokenLParen:      p.parseGroup,
-		tokenDot:         p.parseDot,
-		tokenLookAhead:   p.parseLookAhead,
-		tokenLookBehind:  p.parseLookBehind,
-		tokenNonCapParen: p.parseNonCapGroup,
-		tokenInlineFlags: p.parseInlineFlags,
-		tokenEmpty:       func() (node, error) { return &emptyNode{}, nil },
-		tokenStart:       func() (node, error) { return &startNode{}, nil },
-		tokenEnd:         func() (node, error) { return &endNode{}, nil },
-		tokenWordBoundary: func() (node, error) { return &wordBoundaryNode{}, nil },
-		tokenNotWordBoundary: func() (node, error) { return &notWordBoundaryNode{}, nil },
-		tokenBeginText:   func() (node, error) { return &beginTextNode{}, nil },
-		tokenEndText:     func() (node, error) { return &endTextNode{}, nil },
+		tokenLiteral:                p.parseLiteral,
+		tokenEscape:                 p.parseEscape,
+		tokenCharClass:              p.parseCharClass,
+		tokenLParen:                 p.parseGroup,
+		tokenDot:                    p.parseDot,
+		tokenLookAhead:              p.parseLookAhead,
+		tokenLookBehind:             p.parseLookBehind,
+		tokenNonCapParen:            p.parseNonCapGroup,
+		tokenInlineFlags:            p.parseInlineFlags,
+		tokenEmpty:                  func() (node, error) { return &emptyNode{}, nil },
+		tokenStart:                  func() (node, error) { return &startNode{}, nil },
+		tokenEnd:                    func() (node, error) { return &endNode{}, nil },
+		tokenWordBoundary:           func() (node, error) { return &wordBoundaryNode{}, nil },
+		tokenNotWordBoundary:        func() (node, error) { return &notWordBoundaryNode{}, nil },
+		tokenBeginText:              func() (node, error) { return &beginTextNode{}, nil },
+		tokenEndText:                func() (node, error) { return &endTextNode{}, nil },
 		tokenEndTextOptionalNewline: func() (node, error) { return &endTextOptionalNewlineNode{}, nil },
-		tokenComma:       func() (node, error) { return lowerRuneLiteral(','), nil },
-		tokenLBrace:      func() (node, error) { return lowerRuneLiteral('{'), nil },
-		tokenRBrace:      func() (node, error) { return lowerRuneLiteral('}'), nil },
-		tokenUnion:       p.parseEmptyLeftUnion,
+		tokenComma:                  func() (node, error) { return lowerRuneLiteral(','), nil },
+		tokenLBrace:                 func() (node, error) { return lowerRuneLiteral('{'), nil },
+		tokenRBrace:                 func() (node, error) { return lowerRuneLiteral('}'), nil },
+		tokenUnion:                  p.parseEmptyLeftUnion,
 	}
 	p.infixParseFns = map[tokenType]func(node) (node, error){
 		tokenUnion:     p.parseUnion,
