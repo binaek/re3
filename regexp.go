@@ -62,6 +62,7 @@ type regexpImpl struct {
 	unanchored    *lazyDFA
 	reverse       *lazyDFA
 	prefix        string    // optional literal prefix for Find fast-forward; empty means none
+	prefixAny     string    // character-class prefix for strings.IndexAny when no literal prefix
 	CaptureCount  int       // number of capture groups (GroupNodes)
 	forwardTDFA   *lazyTDFA // built lazily when a submatch API is used
 	hasAssertions bool
@@ -184,6 +185,12 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 			return nil
 		}
 		bytePos += idx
+	} else if len(re.prefixAny) > 0 {
+		idx := strings.IndexAny(s[bytePos:], re.prefixAny)
+		if idx < 0 {
+			return nil
+		}
+		bytePos += idx
 	}
 
 	firstEnd := -1
@@ -291,7 +298,21 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 }
 
 func (re *regexpImpl) findStringIndexFromWithAssertions(ctx context.Context, s string, from int) []int {
-	for start := from; start <= len(s); start++ {
+	start := from
+	if len(re.prefix) > 0 {
+		idx := strings.Index(s[start:], re.prefix)
+		if idx < 0 {
+			return nil
+		}
+		start += idx
+	} else if len(re.prefixAny) > 0 {
+		idx := strings.IndexAny(s[start:], re.prefixAny)
+		if idx < 0 {
+			return nil
+		}
+		start += idx
+	}
+	for ; start <= len(s); start++ {
 		state := 0
 		longestEnd := -1
 
@@ -892,6 +913,7 @@ func (re *regexpImpl) Clone() RegExp {
 		unanchored:    newLazyDFA(context.Background(), re.unanchored.root, re.minterms),
 		reverse:       newLazyDFA(context.Background(), re.reverse.root, re.minterms),
 		prefix:        re.prefix,
+		prefixAny:     re.prefixAny,
 		CaptureCount:  re.CaptureCount,
 		hasAssertions: re.hasAssertions,
 		llOrLuRepeat:  re.llOrLuRepeat,

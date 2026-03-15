@@ -213,13 +213,19 @@ func compile(ctx context.Context, expr string) (RegExpContext, error) {
 	unanchored := newLazyDFA(ctx, unanchoredAST, minterms)
 	reverse := newLazyDFA(ctx, revAST, minterms)
 
+	prefix := extractLiteralPrefix(ctx, ast)
+	prefixAny := ""
+	if prefix == "" {
+		prefixAny = extractStartClass(ctx, ast)
+	}
 	return &regexpImpl{
 		instanceID:    nextInstanceID.Add(1),
 		minterms:      minterms,
 		forward:       forward,
 		unanchored:    unanchored,
 		reverse:       reverse,
-		prefix:        extractLiteralPrefix(ctx, ast),
+		prefix:        prefix,
+		prefixAny:     prefixAny,
 		CaptureCount:  countCaptureGroups(ast),
 		hasAssertions: containsAssertions(ast),
 		llOrLuRepeat:  llOrLuRepeat,
@@ -298,6 +304,73 @@ func extractLiteralPrefix(ctx context.Context, n node) string {
 	default:
 		return ""
 	}
+}
+
+const maxPrefixAnyClassSize = 8
+
+// extractStartClass returns the set of bytes that can appear as the first byte of a match,
+// for strings.IndexAny fast-forward. Returns "" when no bounded set can be extracted.
+// Concat bails if Left is nullable; Union bails if either branch is unbounded; CharClass capped at 8 bytes.
+func extractStartClass(ctx context.Context, n node) string {
+	switch nd := n.(type) {
+	case *literalNode:
+		return string([]byte{nd.Value})
+	case *charClassNode:
+		p := nd.Pred
+		if p == (predicate{}) {
+			p = parseCharClass(ctx, nd.Class)
+		}
+		var set []byte
+		for b := 0; b < 256; b++ {
+			if p[b] {
+				set = append(set, byte(b))
+			}
+		}
+		if len(set) > maxPrefixAnyClassSize {
+			return ""
+		}
+		return string(set)
+	case *unionNode:
+		leftStr := extractStartClass(ctx, nd.Left)
+		rightStr := extractStartClass(ctx, nd.Right)
+		if leftStr == "" || rightStr == "" {
+			return ""
+		}
+		return dedupeStartClass(leftStr + rightStr)
+	case *concatNode:
+		if !nd.Left.Nullable(ctx, matchContext{}) {
+			return extractStartClass(ctx, nd.Left)
+		}
+		return ""
+	case *groupNode:
+		return extractStartClass(ctx, nd.Child)
+	case *repeatNode:
+		if nd.Min > 0 {
+			return extractStartClass(ctx, nd.Child)
+		}
+		return ""
+	case *starNode, *anyNode, *anyByteNode, *falseNode, *emptyNode,
+		*lookAheadNode, *lookBehindNode, *tagNode,
+		*complementNode, *intersectNode, *startNode, *endNode,
+		*beginTextNode, *endTextNode, *endTextOptionalNewlineNode,
+		*wordBoundaryNode, *notWordBoundaryNode:
+		return ""
+	default:
+		return ""
+	}
+}
+
+func dedupeStartClass(s string) string {
+	seen := make(map[byte]bool)
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	return string(out)
 }
 
 // isExactLiteral reports whether n is a chain of only literal nodes (no alternation, classes, etc.).
