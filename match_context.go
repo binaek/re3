@@ -5,6 +5,19 @@ import (
 	"unicode/utf8"
 )
 
+// Context mask bits for assertion caching. Used as (stateID, effectiveMask) cache key.
+const (
+	ctxMaskAtStart                   uint16 = 1 << 0
+	ctxMaskAtEnd                     uint16 = 1 << 1
+	ctxMaskPrevIsWord                uint16 = 1 << 2
+	ctxMaskNextIsWord                uint16 = 1 << 3
+	ctxMaskPrevIsASCIIWord           uint16 = 1 << 4
+	ctxMaskNextIsASCIIWord           uint16 = 1 << 5
+	ctxMaskPrevIsNewline             uint16 = 1 << 6
+	ctxMaskNextIsNewline             uint16 = 1 << 7
+	ctxMaskAtEndAfterOptionalNewline uint16 = 1 << 8
+)
+
 type matchContext struct {
 	AtStart                   bool
 	AtEnd                     bool
@@ -73,4 +86,37 @@ func makeMatchContextString(s string, pos int) matchContext {
 		ctx.AtEndAfterOptionalNewline = true
 	}
 	return ctx
+}
+
+// matchContextToMask packs the 9 context booleans into a uint16 for use as cache key.
+func matchContextToMask(m matchContext) uint16 {
+	var mask uint16
+	if m.AtStart {
+		mask |= ctxMaskAtStart
+	}
+	if m.AtEnd {
+		mask |= ctxMaskAtEnd
+	}
+	if m.PrevIsWord {
+		mask |= ctxMaskPrevIsWord
+	}
+	if m.NextIsWord {
+		mask |= ctxMaskNextIsWord
+	}
+	if m.PrevIsASCIIWord {
+		mask |= ctxMaskPrevIsASCIIWord
+	}
+	if m.NextIsASCIIWord {
+		mask |= ctxMaskNextIsASCIIWord
+	}
+	if m.PrevIsNewline {
+		mask |= ctxMaskPrevIsNewline
+	}
+	if m.NextIsNewline {
+		mask |= ctxMaskNextIsNewline
+	}
+	if m.AtEndAfterOptionalNewline {
+		mask |= ctxMaskAtEndAfterOptionalNewline
+	}
+	return mask
 }
