@@ -9,7 +9,8 @@ import (
 )
 
 // runWithTimeout runs fn in a goroutine and fails the test if it exceeds timeout.
-func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
+// If onTimeout is non-nil and a timeout occurs, it is called before failing (e.g. to log metrics).
+func runWithTimeout(t *testing.T, timeout time.Duration, fn func(), onTimeout ...func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
@@ -19,6 +20,9 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		for _, f := range onTimeout {
+			f()
+		}
 		t.Fatalf("operation exceeded timeout %s", timeout)
 	}
 }

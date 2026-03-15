@@ -46,6 +46,15 @@ OPTIONS
       Default: sibling "rebar" repo next to this "re3" repo
       Env: REBAR
 
+  --enable-metrics
+      Enable OpenTelemetry (metrics, spans, logging) and write to metrics.log
+      next to the benchmark CSV. Sets OTEL_ENABLED=true and OTEL_FILE_PATH.
+      Env: ENABLE_METRICS (set to 1 or non-empty)
+
+  -t, --timeout DURATION
+      Per-benchmark timeout passed to `rebar measure --timeout`.
+      Default: 10s. Env: TIMEOUT
+
 NOTES
   - If the `rebar` binary is missing under the repo's `target/` directory,
     the script will exit with a message showing the `cargo build` command
@@ -62,6 +71,8 @@ OUTDIR="${OUTDIR:-$DEFAULT_OUTDIR}"
 FILTER="${FILTER:-}"
 ENGINES="${ENGINES:-go/regexp|go/re3}"
 SEARCH_ROOT="${REBAR:-}"
+ENABLE_METRICS="${ENABLE_METRICS:-}"
+TIMEOUT="${TIMEOUT:-10s}"
 
 while [ "${1:-}" != "" ]; do
   case "$1" in
@@ -78,8 +89,14 @@ while [ "${1:-}" != "" ]; do
     -f|--filter)
       FILTER="${2:-}"; shift 2
       ;;
+    -t|--timeout)
+      TIMEOUT="${2:-}"; shift 2
+      ;;
     --rebar)
       SEARCH_ROOT="${2:-}"; shift 2
+      ;;
+    --enable-metrics)
+      ENABLE_METRICS=1; shift
       ;;
     --)
       shift
@@ -143,9 +160,11 @@ start_at_utc,$START_AT_UTC
 script_path,$SELF_PATH
 engines,$ENGINES
 filter,${FILTER:-}
+enable_metrics,${ENABLE_METRICS:-0}
+timeout,${TIMEOUT:-10s}
 EOF
 
-# Build the re3 engine, the regexp engine, and the rust/regex engine
+# Build the re3 engine, the regexp engine
 IFS_backup="$IFS"
 IFS='|'
 for engine in $ENGINES; do
@@ -158,9 +177,17 @@ IFS="$IFS_backup"
 # Run all benchmarks in one go; FILTER and ENGINES are passed through to rebar.
 ALL_RESULTS="${OUTDIR}/benchmarks.csv"
 REPORT_PATH="${OUTDIR}/report.md"
+METRICS_PATH="${OUTDIR}/metrics.log"
+
+if [ -n "$ENABLE_METRICS" ]; then
+  export OTEL_ENABLED=true
+  export OTEL_FILE_PATH="$METRICS_PATH"
+  : > "$METRICS_PATH"
+  echo "OpenTelemetry enabled; output: $METRICS_PATH"
+fi
 
 echo "Running benchmarks..."
-"$REBAR_CMD" measure -e "$ENGINES" ${FILTER:+ -f "$FILTER"} | tee "$ALL_RESULTS"
+"$REBAR_CMD" measure -e "$ENGINES" --timeout "$TIMEOUT" ${FILTER:+ -f "$FILTER"} | tee "$ALL_RESULTS"
 
 # Record end time for this run.
 END_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"

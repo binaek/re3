@@ -1,15 +1,17 @@
 package re3
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
 
 func TestInjectCaptureTags(t *testing.T) {
 	// GroupNode(1, a) -> Concat(Tag(1,start), Concat(a, Tag(1,end)))
-	a := &literalNode{Value: 'a'}
-	group := &groupNode{GroupID: 1, Child: a}
-	tagged := injectCaptureTags(group)
+	ctx := context.Background()
+	a := newLiteralNode(ctx, 'a')
+	group := newGroupNode(ctx, 1, a)
+	tagged := injectCaptureTags(ctx, group)
 
 	concat, ok := tagged.(*concatNode)
 	if !ok {
@@ -34,8 +36,9 @@ func TestInjectCaptureTags(t *testing.T) {
 
 func TestStepTDFA_Basic(t *testing.T) {
 	// stepTDFA(Lit('a'), 'a') -> one config: NextNode=Empty, Tags=nil
-	lit := &literalNode{Value: 'a'}
-	configs := stepTDFA(lit, 'a', matchContext{})
+	ctx := context.Background()
+	lit := newLiteralNode(ctx, 'a')
+	configs := stepTDFA(ctx, lit, 'a', matchContext{})
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'a') want 1 config, got %d", len(configs))
 	}
@@ -47,7 +50,7 @@ func TestStepTDFA_Basic(t *testing.T) {
 	}
 
 	// stepTDFA(Lit('a'), 'b') -> one config: NextNode=False
-	configs = stepTDFA(lit, 'b', matchContext{})
+	configs = stepTDFA(ctx, lit, 'b', matchContext{})
 	if len(configs) != 1 {
 		t.Fatalf("stepTDFA(Lit('a'), 'b') want 1 config, got %d", len(configs))
 	}
@@ -61,16 +64,11 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 	// left branch yields (Empty, [Tag1]) among others, right yields (Empty, [Tag2]).
 	// Configs order: left configs first, then right. So first Empty config has Tag1.
 	// TDFA compiler takes configs[0] when multiple configs have same NextNode -> leftmost wins.
-	tag1a := &concatNode{
-		Left:  &tagNode{Id: 1, IsStart: true},
-		Right: &literalNode{Value: 'a'},
-	}
-	tag2a := &concatNode{
-		Left:  &tagNode{Id: 2, IsStart: true},
-		Right: &literalNode{Value: 'a'},
-	}
-	u := &unionNode{Left: tag1a, Right: tag2a}
-	configs := stepTDFA(u, 'a', matchContext{})
+	ctx := context.Background()
+	tag1a := newConcatNode(ctx, newTagNode(ctx, 1, true), newLiteralNode(ctx, 'a'))
+	tag2a := newConcatNode(ctx, newTagNode(ctx, 2, true), newLiteralNode(ctx, 'a'))
+	u := newUnionNodeOrdered(ctx, tag1a, tag2a)
+	configs := stepTDFA(ctx, u, 'a', matchContext{})
 	if len(configs) < 2 {
 		t.Fatalf("stepTDFA(Union(Concat(Tag1,a), Concat(Tag2,a)), 'a') want at least 2 configs, got %d", len(configs))
 	}
@@ -92,16 +90,17 @@ func TestStepTDFA_UnionDisambiguation(t *testing.T) {
 }
 
 func TestCountCaptureGroups(t *testing.T) {
+	ctx := context.Background()
 	tests := []struct {
 		name string
 		ast  node
 		want int
 	}{
-		{"no group", &literalNode{Value: 'a'}, 0},
-		{"one group", &groupNode{GroupID: 1, Child: &literalNode{Value: 'a'}}, 1},
-		{"two groups", newConcatNode(
-			&groupNode{GroupID: 1, Child: &literalNode{Value: 'a'}},
-			&groupNode{GroupID: 2, Child: &literalNode{Value: 'b'}},
+		{"no group", newLiteralNode(ctx, 'a'), 0},
+		{"one group", newGroupNode(ctx, 1, newLiteralNode(ctx, 'a')), 1},
+		{"two groups", newConcatNode(ctx,
+			newGroupNode(ctx, 1, newLiteralNode(ctx, 'a')),
+			newGroupNode(ctx, 2, newLiteralNode(ctx, 'b')),
 		), 2},
 	}
 	for _, tc := range tests {
@@ -120,8 +119,9 @@ func TestRunTDFA_AcceptingSetsCaptureZero(t *testing.T) {
 	if re.CaptureCount != 1 {
 		t.Fatalf("CaptureCount want 1, got %d", re.CaptureCount)
 	}
-	tagged := injectCaptureTags(re.forward.root)
-	configs := stepTDFA(tagged, 'a', matchContext{})
+	ctx := context.Background()
+	tagged := injectCaptureTags(ctx, re.forward.root)
+	configs := stepTDFA(ctx, tagged, 'a', matchContext{})
 	if len(configs) == 0 {
 		t.Fatalf("stepTDFA(taggedRoot, 'a') returned 0 configs (r might be wrong in getNextState)")
 	}
@@ -130,9 +130,9 @@ func TestRunTDFA_AcceptingSetsCaptureZero(t *testing.T) {
 		t.Fatal("FindStringIndex((a), \"a\") returned nil")
 	}
 	if re.forwardTDFA == nil {
-		re.forwardTDFA = newLazyTDFA(tagged, re.minterms, re.CaptureCount)
+		re.forwardTDFA = newLazyTDFA(ctx, tagged, re.minterms, re.CaptureCount)
 	}
-	capture := re.forwardTDFA.runTDFA("a")
+	capture := re.forwardTDFA.runTDFA(ctx, "a")
 	if capture == nil {
 		t.Fatal("runTDFA(\"a\") returned nil")
 	}
