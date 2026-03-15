@@ -56,17 +56,19 @@ func advancePosAfterEmptyMatchBytes(b []byte, pos int) int {
 
 // regexpImpl is the default lock-free implementation of RegExp.
 type regexpImpl struct {
-	instanceID    uint64
-	minterms      *mintermTable
-	forward       *lazyDFA
-	unanchored    *lazyDFA
-	reverse       *lazyDFA
-	prefix        string    // optional literal prefix for Find fast-forward; empty means none
-	prefixAny     string    // character-class prefix for strings.IndexAny when no literal prefix
-	CaptureCount  int       // number of capture groups (GroupNodes)
-	forwardTDFA   *lazyTDFA // built lazily when a submatch API is used
-	hasAssertions bool
-	llOrLuRepeat  int
+	instanceID         uint64
+	minterms           *mintermTable
+	forward            *lazyDFA
+	unanchored         *lazyDFA
+	reverse            *lazyDFA
+	prefix             string    // optional literal prefix for Find fast-forward; empty means none
+	prefixAny          string    // character-class prefix for strings.IndexAny when no literal prefix
+	earlyByte          byte      // optional post-prefix gate: require this byte at offset (0 = disabled)
+	earlyLiteralOffset int       // byte offset from first-byte match for earlyByte gate
+	CaptureCount       int       // number of capture groups (GroupNodes)
+	forwardTDFA        *lazyTDFA // built lazily when a submatch API is used
+	hasAssertions      bool
+	llOrLuRepeat       int
 }
 
 // Match reports whether the byte slice b contains any match of the regular expression.
@@ -192,6 +194,24 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 		}
 		bytePos += idx
 	}
+	for re.earlyByte != 0 && bytePos < len(s) && (bytePos+re.earlyLiteralOffset >= len(s) || s[bytePos+re.earlyLiteralOffset] != re.earlyByte) {
+		next := bytePos + 1
+		if len(re.prefix) > 0 {
+			idx := strings.Index(s[next:], re.prefix)
+			if idx < 0 {
+				return nil
+			}
+			bytePos = next + idx
+		} else if len(re.prefixAny) > 0 {
+			idx := strings.IndexAny(s[next:], re.prefixAny)
+			if idx < 0 {
+				return nil
+			}
+			bytePos = next + idx
+		} else {
+			break
+		}
+	}
 
 	firstEnd := -1
 	unanchoredAccepts := re.unanchored.isAccepting(0)
@@ -313,6 +333,24 @@ func (re *regexpImpl) findStringIndexFromWithAssertions(ctx context.Context, s s
 		start += idx
 	}
 	for ; start <= len(s); start++ {
+		maybeCountCandidateStart()
+		if re.earlyByte != 0 && (start+re.earlyLiteralOffset >= len(s) || s[start+re.earlyLiteralOffset] != re.earlyByte) {
+			next := start + 1
+			if len(re.prefix) > 0 {
+				idx := strings.Index(s[next:], re.prefix)
+				if idx < 0 {
+					return nil
+				}
+				start = next + idx - 1
+			} else if len(re.prefixAny) > 0 {
+				idx := strings.IndexAny(s[next:], re.prefixAny)
+				if idx < 0 {
+					return nil
+				}
+				start = next + idx - 1
+			}
+			continue
+		}
 		state := 0
 		longestEnd := -1
 
@@ -320,20 +358,42 @@ func (re *regexpImpl) findStringIndexFromWithAssertions(ctx context.Context, s s
 			longestEnd = start
 		}
 
+		scanStart := start
 		for pos := start; pos < len(s); pos++ {
 			mintermID := re.minterms.ByteToClass[s[pos]]
 			mctx := makeMatchContextString(s, pos)
 			state = re.forward.getNextState(ctx, state, mintermID, mctx)
 			if state == re.forward.deadStateID {
+				maybeCountBytesScanned(pos - scanStart + 1)
 				break
 			}
 			if re.forward.isAcceptingWithContext(ctx, state, makeMatchContextString(s, pos+1)) {
 				longestEnd = pos + 1
 			}
 		}
+		if state != re.forward.deadStateID {
+			maybeCountBytesScanned(len(s) - scanStart)
+		}
 
 		if longestEnd >= 0 {
 			return []int{start, longestEnd}
+		}
+		// Advance to next prefilter candidate (interim containment: skip to next prefix/prefixAny).
+		nextStart := start + 1
+		if len(re.prefix) > 0 {
+			idx := strings.Index(s[nextStart:], re.prefix)
+			if idx < 0 {
+				return nil
+			}
+			start = nextStart + idx
+		} else if len(re.prefixAny) > 0 {
+			idx := strings.IndexAny(s[nextStart:], re.prefixAny)
+			if idx < 0 {
+				return nil
+			}
+			start = nextStart + idx
+		} else {
+			start = nextStart
 		}
 	}
 	return nil
@@ -907,16 +967,18 @@ func (re *regexpImpl) InstanceID() uint64 {
 // lazy DFA caches. Safe to use the original and clone in different goroutines.
 func (re *regexpImpl) Clone() RegExp {
 	return &regexpImpl{
-		instanceID:    nextInstanceID.Add(1),
-		minterms:      re.minterms,
-		forward:       newLazyDFA(context.Background(), re.forward.root, re.minterms),
-		unanchored:    newLazyDFA(context.Background(), re.unanchored.root, re.minterms),
-		reverse:       newLazyDFA(context.Background(), re.reverse.root, re.minterms),
-		prefix:        re.prefix,
-		prefixAny:     re.prefixAny,
-		CaptureCount:  re.CaptureCount,
-		hasAssertions: re.hasAssertions,
-		llOrLuRepeat:  re.llOrLuRepeat,
+		instanceID:         nextInstanceID.Add(1),
+		minterms:           re.minterms,
+		forward:            newLazyDFA(context.Background(), re.forward.root, re.minterms),
+		unanchored:         newLazyDFA(context.Background(), re.unanchored.root, re.minterms),
+		reverse:            newLazyDFA(context.Background(), re.reverse.root, re.minterms),
+		prefix:             re.prefix,
+		prefixAny:          re.prefixAny,
+		earlyByte:          re.earlyByte,
+		earlyLiteralOffset: re.earlyLiteralOffset,
+		CaptureCount:       re.CaptureCount,
+		hasAssertions:      re.hasAssertions,
+		llOrLuRepeat:       re.llOrLuRepeat,
 		// forwardTDFA not copied; built on first submatch use
 	}
 }

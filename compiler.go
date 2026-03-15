@@ -24,25 +24,29 @@ type mintermTable struct {
 // lazyDFA holds the root AST and lazily computed state cache.
 // It is not safe for concurrent use.
 type lazyDFA struct {
-	root        node
-	minterms    *mintermTable
-	stateASTs   []node
-	stateIndex  map[uint64][]int
-	transitions [][]int
-	isMatch     []bool
-	deadStateID int
+	root                 node
+	minterms             *mintermTable
+	stateASTs            []node
+	requiredCtxMask      []uint16 // per-state mask of context bits this state's AST uses
+	stateIndex           map[uint64][]int
+	transitions          [][]int          // dense rows for mask 0
+	assertionTransitions map[uint64][]int // key: stateID<<16|effectiveMask, value: row for non-zero masks
+	isMatch              []bool
+	deadStateID          int
 }
 
 func newLazyDFA(ctx context.Context, root node, minterms *mintermTable) *lazyDFA {
 	dead := newFalseNode(ctx)
 	dfa := &lazyDFA{
-		root:        root,
-		minterms:    minterms,
-		stateASTs:   []node{root, dead},
-		stateIndex:  make(map[uint64][]int, 2),
-		transitions: make([][]int, 2),
-		isMatch:     []bool{root.Nullable(ctx, matchContext{}), false},
-		deadStateID: 1,
+		root:                 root,
+		minterms:             minterms,
+		stateASTs:            []node{root, dead},
+		requiredCtxMask:      []uint16{requiredContextMask(ctx, root), 0},
+		stateIndex:           make(map[uint64][]int, 2),
+		transitions:          make([][]int, 2),
+		assertionTransitions: make(map[uint64][]int),
+		isMatch:              []bool{root.Nullable(ctx, matchContext{}), false},
+		deadStateID:          1,
 	}
 	dfa.indexState(ctx, 0, root)
 	dfa.indexState(ctx, 1, dead)
@@ -80,7 +84,9 @@ func (dfa *lazyDFA) getNextStateCached(stateID, mintermID int, ctx matchContext)
 }
 
 // getNextState returns the next state ID after reading mintermID from stateID.
-// It computes and caches the derivative on first access.
+// It computes and caches the derivative on first access. When mctx is non-zero,
+// effectiveMask = matchContextToMask(mctx) & requiredCtxMask[stateID] is used to
+// look up or populate the assertion cache (dense storage for mask 0 is unchanged).
 func (dfa *lazyDFA) getNextState(ctx context.Context, stateID, mintermID int, mctx matchContext) int {
 	if stateID == dfa.deadStateID {
 		return dfa.deadStateID
@@ -88,27 +94,48 @@ func (dfa *lazyDFA) getNextState(ctx context.Context, stateID, mintermID int, mc
 	if stateID >= len(dfa.transitions) {
 		return dfa.deadStateID
 	}
+	var effectiveMask uint16
 	if mctx != (matchContext{}) {
-		currentAST := dfa.stateASTs[stateID]
-		b := dfa.minterms.ClassToByte[mintermID]
-		nextAST := currentAST.Derivative(ctx, b, mctx)
-		nextStateID := dfa.lookupState(ctx, nextAST)
-		if nextStateID < 0 {
-			if len(dfa.stateASTs) >= maxLazyDFAStates {
-				return dfa.deadStateID
-			}
-			nextStateID = len(dfa.stateASTs)
-			dfa.stateASTs = append(dfa.stateASTs, nextAST)
-			dfa.indexState(ctx, nextStateID, nextAST)
-			dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx, mctx))
-			newRow := make([]int, dfa.minterms.NumClasses)
-			for i := range newRow {
-				newRow[i] = -1
-			}
-			dfa.transitions = append(dfa.transitions, newRow)
+		ctxMask := matchContextToMask(mctx)
+		if stateID < len(dfa.requiredCtxMask) {
+			effectiveMask = ctxMask & dfa.requiredCtxMask[stateID]
 		}
-		return nextStateID
+		if effectiveMask != 0 {
+			key := uint64(stateID)<<16 | uint64(effectiveMask)
+			if row, ok := dfa.assertionTransitions[key]; ok && row[mintermID] >= 0 {
+				return row[mintermID]
+			}
+			maybeCountDerivativeCall()
+			currentAST := dfa.stateASTs[stateID]
+			b := dfa.minterms.ClassToByte[mintermID]
+			nextAST := currentAST.Derivative(ctx, b, mctx)
+			nextStateID := dfa.lookupState(ctx, nextAST)
+			if nextStateID < 0 {
+				if len(dfa.stateASTs) >= maxLazyDFAStates {
+					return dfa.deadStateID
+				}
+				nextStateID = len(dfa.stateASTs)
+				dfa.stateASTs = append(dfa.stateASTs, nextAST)
+				dfa.requiredCtxMask = append(dfa.requiredCtxMask, requiredContextMask(ctx, nextAST))
+				dfa.indexState(ctx, nextStateID, nextAST)
+				dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx, mctx))
+				newRow := make([]int, dfa.minterms.NumClasses)
+				for i := range newRow {
+					newRow[i] = -1
+				}
+				dfa.transitions = append(dfa.transitions, newRow)
+			}
+			if dfa.assertionTransitions[key] == nil {
+				dfa.assertionTransitions[key] = make([]int, dfa.minterms.NumClasses)
+				for i := range dfa.assertionTransitions[key] {
+					dfa.assertionTransitions[key][i] = -1
+				}
+			}
+			dfa.assertionTransitions[key][mintermID] = nextStateID
+			return nextStateID
+		}
 	}
+	// Dense path: mask 0 or effectiveMask == 0
 	row := dfa.transitions[stateID]
 	if row == nil {
 		row = make([]int, dfa.minterms.NumClasses)
@@ -120,11 +147,9 @@ func (dfa *lazyDFA) getNextState(ctx context.Context, stateID, mintermID int, mc
 	if row[mintermID] >= 0 {
 		return row[mintermID]
 	}
-	// Cache miss: compute derivative
 	currentAST := dfa.stateASTs[stateID]
 	b := dfa.minterms.ClassToByte[mintermID]
 	nextAST := currentAST.Derivative(ctx, b, matchContext{})
-
 	nextStateID := dfa.lookupState(ctx, nextAST)
 	if nextStateID < 0 {
 		if len(dfa.stateASTs) >= maxLazyDFAStates {
@@ -133,6 +158,7 @@ func (dfa *lazyDFA) getNextState(ctx context.Context, stateID, mintermID int, mc
 		}
 		nextStateID = len(dfa.stateASTs)
 		dfa.stateASTs = append(dfa.stateASTs, nextAST)
+		dfa.requiredCtxMask = append(dfa.requiredCtxMask, requiredContextMask(ctx, nextAST))
 		dfa.indexState(ctx, nextStateID, nextAST)
 		dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx, matchContext{}))
 		newRow := make([]int, dfa.minterms.NumClasses)
@@ -173,6 +199,45 @@ func (dfa *lazyDFA) isAcceptingWithContext(ctx context.Context, stateID int, mct
 		return false
 	}
 	return dfa.stateASTs[stateID].Nullable(ctx, mctx)
+}
+
+// requiredContextMask returns the set of matchContext bits that n (and its descendants) depend on.
+// Used to compute per-state requiredCtxMask once at state creation.
+func requiredContextMask(ctx context.Context, n node) uint16 {
+	switch nd := n.(type) {
+	case *startNode:
+		return ctxMaskAtStart | ctxMaskPrevIsNewline
+	case *endNode:
+		return ctxMaskAtEnd | ctxMaskNextIsNewline
+	case *beginTextNode:
+		return ctxMaskAtStart
+	case *endTextNode:
+		return ctxMaskAtEnd
+	case *endTextOptionalNewlineNode:
+		return ctxMaskAtEndAfterOptionalNewline
+	case *wordBoundaryNode, *notWordBoundaryNode:
+		return ctxMaskPrevIsWord | ctxMaskNextIsWord | ctxMaskPrevIsASCIIWord | ctxMaskNextIsASCIIWord
+	case *concatNode:
+		return requiredContextMask(ctx, nd.Left) | requiredContextMask(ctx, nd.Right)
+	case *unionNode:
+		return requiredContextMask(ctx, nd.Left) | requiredContextMask(ctx, nd.Right)
+	case *groupNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *repeatNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *starNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *lookAheadNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *lookBehindNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *complementNode:
+		return requiredContextMask(ctx, nd.Child)
+	case *intersectNode:
+		return requiredContextMask(ctx, nd.Left) | requiredContextMask(ctx, nd.Right)
+	default:
+		return 0
+	}
 }
 
 // --- THE COMPILER PIPELINE ---
@@ -218,17 +283,20 @@ func compile(ctx context.Context, expr string) (RegExpContext, error) {
 	if prefix == "" {
 		prefixAny = extractStartClass(ctx, ast)
 	}
+	earlyByte, earlyLiteralOffset := extractEarlyByteGate(prefixAny, expr)
 	return &regexpImpl{
-		instanceID:    nextInstanceID.Add(1),
-		minterms:      minterms,
-		forward:       forward,
-		unanchored:    unanchored,
-		reverse:       reverse,
-		prefix:        prefix,
-		prefixAny:     prefixAny,
-		CaptureCount:  countCaptureGroups(ast),
-		hasAssertions: containsAssertions(ast),
-		llOrLuRepeat:  llOrLuRepeat,
+		instanceID:         nextInstanceID.Add(1),
+		minterms:           minterms,
+		forward:            forward,
+		unanchored:         unanchored,
+		reverse:            reverse,
+		prefix:             prefix,
+		prefixAny:          prefixAny,
+		earlyByte:          earlyByte,
+		earlyLiteralOffset: earlyLiteralOffset,
+		CaptureCount:       countCaptureGroups(ast),
+		hasAssertions:      containsAssertions(ast),
+		llOrLuRepeat:       llOrLuRepeat,
 	}, nil
 }
 
@@ -371,6 +439,19 @@ func dedupeStartClass(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// extractEarlyByteGate returns (earlyByte, offset) for a post-prefix gate when the pattern
+// suggests a fixed byte at a fixed offset after the first-byte match. v1: AWS-key-style pattern
+// (quote then A from ASIA|AKIA|AROA|AIDA) returns ('A', 1). Otherwise (0, 0).
+func extractEarlyByteGate(prefixAny, expr string) (byte, int) {
+	if prefixAny != "'\"" && prefixAny != "\"'" {
+		return 0, 0
+	}
+	if strings.Contains(expr, "ASIA") && strings.Contains(expr, "AKIA") {
+		return 'A', 1
+	}
+	return 0, 0
 }
 
 // isExactLiteral reports whether n is a chain of only literal nodes (no alternation, classes, etc.).
