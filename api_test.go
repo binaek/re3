@@ -286,6 +286,35 @@ func TestFindAllIndex(t *testing.T) {
 	}
 }
 
+// TestPrefixAnyStartClass verifies the prefixAny (IndexAny) fast-forward: patterns that
+// start with a union of literals or a small char class use strings.IndexAny to skip to
+// candidate bytes, and nullable Concat does not use prefixAny (so (a)*b still matches at 0).
+func TestPrefixAnyStartClass(t *testing.T) {
+	t.Run("union_start", func(t *testing.T) {
+		re := MustCompile(`('|")quote`)
+		// Fast-forward should skip to first ' or ", then match.
+		if got := re.FindStringIndex("___'quote"); !reflect.DeepEqual(got, []int{3, 9}) {
+			t.Errorf("FindStringIndex(`('|\")quote`, \"___'quote\") = %v, want [3 9]", got)
+		}
+		if got := re.FindStringIndex("____\"quote"); !reflect.DeepEqual(got, []int{4, 10}) {
+			t.Errorf("FindStringIndex(`('|\")quote`, \"____\\\"quote\") = %v, want [4 10]", got)
+		}
+	})
+	t.Run("charclass_start", func(t *testing.T) {
+		re := MustCompile(`[ab]c`)
+		if got := re.FindStringIndex("xac"); !reflect.DeepEqual(got, []int{1, 3}) {
+			t.Errorf("FindStringIndex(`[ab]c`, \"xac\") = %v, want [1 3]", got)
+		}
+	})
+	t.Run("nullable_concat_no_skip", func(t *testing.T) {
+		// (a)*b must not use prefixAny (left is nullable), so we scan from 0 and find "aaab" at 0.
+		re := MustCompile(`(a)*b`)
+		if got := re.FindStringIndex("aaab"); !reflect.DeepEqual(got, []int{0, 4}) {
+			t.Errorf("FindStringIndex(`(a)*b`, \"aaab\") = %v, want [0 4]", got)
+		}
+	})
+}
+
 func TestReplaceAllString(t *testing.T) {
 	for i, tc := range replaceTests {
 		re := MustCompile(tc.pattern)
