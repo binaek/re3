@@ -1,11 +1,17 @@
 package re3
 
 import (
+	"context"
 	"strconv"
 	"strings"
+	"sync/atomic"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const maxLazyDFAStates = 100_000
+
+var nextInstanceID atomic.Uint64
 
 // --- TYPES ---
 
@@ -27,19 +33,19 @@ type lazyDFA struct {
 	deadStateID int
 }
 
-func newLazyDFA(root node, minterms *mintermTable) *lazyDFA {
-	dead := newFalseNode()
+func newLazyDFA(ctx context.Context, root node, minterms *mintermTable) *lazyDFA {
+	dead := newFalseNode(ctx)
 	dfa := &lazyDFA{
 		root:        root,
 		minterms:    minterms,
 		stateASTs:   []node{root, dead},
 		stateIndex:  make(map[uint64][]int, 2),
 		transitions: make([][]int, 2),
-		isMatch:     []bool{root.Nullable(matchContext{}), false},
+		isMatch:     []bool{root.Nullable(ctx, matchContext{}), false},
 		deadStateID: 1,
 	}
-	dfa.indexState(0, root)
-	dfa.indexState(1, dead)
+	dfa.indexState(ctx, 0, root)
+	dfa.indexState(ctx, 1, dead)
 	dfa.transitions[0] = make([]int, minterms.NumClasses)
 	for i := range dfa.transitions[0] {
 		dfa.transitions[0][i] = -1
@@ -75,26 +81,26 @@ func (dfa *lazyDFA) getNextStateCached(stateID, mintermID int, ctx matchContext)
 
 // getNextState returns the next state ID after reading mintermID from stateID.
 // It computes and caches the derivative on first access.
-func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
+func (dfa *lazyDFA) getNextState(ctx context.Context, stateID, mintermID int, mctx matchContext) int {
 	if stateID == dfa.deadStateID {
 		return dfa.deadStateID
 	}
 	if stateID >= len(dfa.transitions) {
 		return dfa.deadStateID
 	}
-	if ctx != (matchContext{}) {
+	if mctx != (matchContext{}) {
 		currentAST := dfa.stateASTs[stateID]
 		b := dfa.minterms.ClassToByte[mintermID]
-		nextAST := currentAST.Derivative(b, ctx)
-		nextStateID := dfa.lookupState(nextAST)
+		nextAST := currentAST.Derivative(ctx, b, mctx)
+		nextStateID := dfa.lookupState(ctx, nextAST)
 		if nextStateID < 0 {
 			if len(dfa.stateASTs) >= maxLazyDFAStates {
 				return dfa.deadStateID
 			}
 			nextStateID = len(dfa.stateASTs)
 			dfa.stateASTs = append(dfa.stateASTs, nextAST)
-			dfa.indexState(nextStateID, nextAST)
-			dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx))
+			dfa.indexState(ctx, nextStateID, nextAST)
+			dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx, mctx))
 			newRow := make([]int, dfa.minterms.NumClasses)
 			for i := range newRow {
 				newRow[i] = -1
@@ -117,9 +123,9 @@ func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
 	// Cache miss: compute derivative
 	currentAST := dfa.stateASTs[stateID]
 	b := dfa.minterms.ClassToByte[mintermID]
-	nextAST := currentAST.Derivative(b, matchContext{})
+	nextAST := currentAST.Derivative(ctx, b, matchContext{})
 
-	nextStateID := dfa.lookupState(nextAST)
+	nextStateID := dfa.lookupState(ctx, nextAST)
 	if nextStateID < 0 {
 		if len(dfa.stateASTs) >= maxLazyDFAStates {
 			row[mintermID] = dfa.deadStateID
@@ -127,8 +133,8 @@ func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
 		}
 		nextStateID = len(dfa.stateASTs)
 		dfa.stateASTs = append(dfa.stateASTs, nextAST)
-		dfa.indexState(nextStateID, nextAST)
-		dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(matchContext{}))
+		dfa.indexState(ctx, nextStateID, nextAST)
+		dfa.isMatch = append(dfa.isMatch, nextAST.Nullable(ctx, matchContext{}))
 		newRow := make([]int, dfa.minterms.NumClasses)
 		for i := range newRow {
 			newRow[i] = -1
@@ -139,8 +145,8 @@ func (dfa *lazyDFA) getNextState(stateID, mintermID int, ctx matchContext) int {
 	return nextStateID
 }
 
-func (dfa *lazyDFA) lookupState(candidate node) int {
-	fp := candidate.FingerPrint()
+func (dfa *lazyDFA) lookupState(ctx context.Context, candidate node) int {
+	fp := candidate.FingerPrint(ctx)
 	bucket := dfa.stateIndex[fp]
 	for _, stateID := range bucket {
 		if dfa.stateASTs[stateID].Equals(candidate) {
@@ -150,8 +156,8 @@ func (dfa *lazyDFA) lookupState(candidate node) int {
 	return -1
 }
 
-func (dfa *lazyDFA) indexState(stateID int, ast node) {
-	fp := ast.FingerPrint()
+func (dfa *lazyDFA) indexState(ctx context.Context, stateID int, ast node) {
+	fp := ast.FingerPrint(ctx)
 	dfa.stateIndex[fp] = append(dfa.stateIndex[fp], stateID)
 }
 
@@ -162,22 +168,26 @@ func (dfa *lazyDFA) isAccepting(stateID int) bool {
 	return dfa.isMatch[stateID]
 }
 
-func (dfa *lazyDFA) isAcceptingWithContext(stateID int, ctx matchContext) bool {
+func (dfa *lazyDFA) isAcceptingWithContext(ctx context.Context, stateID int, mctx matchContext) bool {
 	if stateID < 0 || stateID >= len(dfa.stateASTs) {
 		return false
 	}
-	return dfa.stateASTs[stateID].Nullable(ctx)
+	return dfa.stateASTs[stateID].Nullable(ctx, mctx)
 }
 
 // --- THE COMPILER PIPELINE ---
 
 type predicate [256]bool
 
-func compile(expr string) (RegExp, error) {
+func compile(ctx context.Context, expr string) (RegExpContext, error) {
+	ctx, end := startSpan(ctx, "compile", attribute.String("expr", expr), attribute.Int64("instance_id", int64(nextInstanceID.Load())))
+	defer end()
+
 	expr = rewriteUnicodeLowerUpperAlternation(expr)
 	expr = rewriteOverlappingWords(expr)
 	llOrLuRepeat := parseLlOrLuRepeat(expr)
-	tokens := newLexer(expr).lexAll()
+
+	tokens := newLexer(expr).lexAll(ctx)
 	for _, tok := range tokens {
 		if tok.Type == tokenError {
 			code := ErrTrailingBackslash
@@ -187,21 +197,29 @@ func compile(expr string) (RegExp, error) {
 			return nil, &Error{Code: code, Expr: expr}
 		}
 	}
+
 	parser := newParser(tokens, expr)
-	ast, err := parser.parse()
+	ast, err := parser.parse(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	revAST := ast.Reverse()
-	minterms := buildMintermTable(ast)
-	unanchoredAST := newConcatNode(&starNode{Child: &anyByteNode{}}, ast)
+
+	minterms := buildMintermTable(ctx, ast)
+
+	unanchoredAST := newConcatNode(ctx, newStarNode(ctx, newAnyByteNode(ctx)), ast)
+	forward := newLazyDFA(ctx, ast, minterms)
+	unanchored := newLazyDFA(ctx, unanchoredAST, minterms)
+	reverse := newLazyDFA(ctx, revAST, minterms)
 
 	return &regexpImpl{
+		instanceID:    nextInstanceID.Add(1),
 		minterms:      minterms,
-		forward:       newLazyDFA(ast, minterms),
-		unanchored:    newLazyDFA(unanchoredAST, minterms),
-		reverse:       newLazyDFA(revAST, minterms),
-		prefix:        extractLiteralPrefix(ast),
+		forward:       forward,
+		unanchored:    unanchored,
+		reverse:       reverse,
+		prefix:        extractLiteralPrefix(ctx, ast),
 		CaptureCount:  countCaptureGroups(ast),
 		hasAssertions: containsAssertions(ast),
 		llOrLuRepeat:  llOrLuRepeat,
@@ -254,21 +272,21 @@ func rewriteOverlappingWords(expr string) string {
 // extractLiteralPrefix returns the longest literal prefix of the pattern (required at start).
 // Used to fast-forward FindStringIndex via strings.Index; empty means no literal prefix.
 // Only appends right side of concat when left is a pure literal chain (avoids false negatives like (a|b)c).
-func extractLiteralPrefix(n node) string {
+func extractLiteralPrefix(ctx context.Context, n node) string {
 	switch nd := n.(type) {
 	case *literalNode:
 		return string([]byte{nd.Value})
 	case *concatNode:
-		left := extractLiteralPrefix(nd.Left)
+		left := extractLiteralPrefix(ctx, nd.Left)
 		if isExactLiteral(nd.Left) {
-			return left + extractLiteralPrefix(nd.Right)
+			return left + extractLiteralPrefix(ctx, nd.Right)
 		}
 		return left
 	case *groupNode:
-		return extractLiteralPrefix(nd.Child)
+		return extractLiteralPrefix(ctx, nd.Child)
 	case *repeatNode:
 		if nd.Min > 0 {
-			return extractLiteralPrefix(nd.Child)
+			return extractLiteralPrefix(ctx, nd.Child)
 		}
 		return ""
 	case *starNode, *unionNode, *anyNode, *anyByteNode, *falseNode, *emptyNode,
@@ -298,8 +316,8 @@ func isExactLiteral(n node) bool {
 
 // --- MINTERM COMPRESSION LOGIC ---
 
-func buildMintermTable(ast node) *mintermTable {
-	rawPreds := extractPredicates(ast)
+func buildMintermTable(ctx context.Context, ast node) *mintermTable {
+	rawPreds := extractPredicates(ctx, ast)
 
 	// Deduplicate predicates to prevent O(P * 256) timeout on large dictionaries.
 	seen := make(map[predicate]bool)
@@ -354,13 +372,13 @@ func buildMintermTable(ast node) *mintermTable {
 	return table
 }
 
-func extractPredicates(n node) []predicate {
+func extractPredicates(ctx context.Context, n node) []predicate {
 	var preds []predicate
-	extractPredicatesRec(n, &preds)
+	extractPredicatesRec(ctx, n, &preds)
 	return preds
 }
 
-func extractPredicatesRec(n node, preds *[]predicate) {
+func extractPredicatesRec(ctx context.Context, n node, preds *[]predicate) {
 	switch node := n.(type) {
 	case *literalNode:
 		var p predicate
@@ -369,30 +387,30 @@ func extractPredicatesRec(n node, preds *[]predicate) {
 	case *charClassNode:
 		p := node.Pred
 		if p == (predicate{}) {
-			p = parseCharClass(node.Class)
+			p = parseCharClass(ctx, node.Class)
 		}
 		*preds = append(*preds, p)
 	case *concatNode:
-		extractPredicatesRec(node.Left, preds)
-		extractPredicatesRec(node.Right, preds)
+		extractPredicatesRec(ctx, node.Left, preds)
+		extractPredicatesRec(ctx, node.Right, preds)
 	case *unionNode:
-		extractPredicatesRec(node.Left, preds)
-		extractPredicatesRec(node.Right, preds)
+		extractPredicatesRec(ctx, node.Left, preds)
+		extractPredicatesRec(ctx, node.Right, preds)
 	case *intersectNode:
-		extractPredicatesRec(node.Left, preds)
-		extractPredicatesRec(node.Right, preds)
+		extractPredicatesRec(ctx, node.Left, preds)
+		extractPredicatesRec(ctx, node.Right, preds)
 	case *complementNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *starNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *repeatNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *groupNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *lookAheadNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *lookBehindNode:
-		extractPredicatesRec(node.Child, preds)
+		extractPredicatesRec(ctx, node.Child, preds)
 	case *tagNode:
 		// No predicates from tag nodes.
 	case *anyNode:
@@ -410,7 +428,7 @@ func extractPredicatesRec(n node, preds *[]predicate) {
 	}
 }
 
-func parseCharClass(classStr string) predicate {
+func parseCharClass(ctx context.Context, classStr string) predicate {
 	var p predicate
 	runes := []rune(classStr)
 	negate := false

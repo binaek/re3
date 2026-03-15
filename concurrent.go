@@ -1,6 +1,7 @@
 package re3
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -120,7 +121,7 @@ func (c *concurrentRegExpImpl) FindStringIndex(s string) []int {
 
 func (c *concurrentRegExpImpl) findStringIndexFrom(s string, from int) []int {
 	c.mu.Lock()
-	loc := c.re.findStringIndexFrom(s, from)
+	loc := c.re.findStringIndexFrom(context.Background(), s, from)
 	c.mu.Unlock()
 	return loc
 }
@@ -602,4 +603,118 @@ func (c *concurrentRegExpImpl) Clone() RegExp {
 	re := c.re.Clone()
 	c.mu.RUnlock()
 	return re
+}
+
+func (c *concurrentRegExpImpl) InstanceID() uint64 {
+	c.mu.RLock()
+	id := c.re.instanceID
+	c.mu.RUnlock()
+	return id
+}
+
+// RegExpContext implementation: delegate to underlying regexpImpl with lock.
+func (c *concurrentRegExpImpl) MatchContext(ctx context.Context, b []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.MatchContext(ctx, b)
+}
+func (c *concurrentRegExpImpl) MatchStringContext(ctx context.Context, s string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.MatchStringContext(ctx, s)
+}
+func (c *concurrentRegExpImpl) FindIndexContext(ctx context.Context, b []byte) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindIndexContext(ctx, b)
+}
+func (c *concurrentRegExpImpl) FindStringIndexContext(ctx context.Context, s string) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindStringIndexContext(ctx, s)
+}
+func (c *concurrentRegExpImpl) FindContext(ctx context.Context, b []byte) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindContext(ctx, b)
+}
+func (c *concurrentRegExpImpl) FindStringContext(ctx context.Context, s string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindStringContext(ctx, s)
+}
+func (c *concurrentRegExpImpl) FindAllContext(ctx context.Context, b []byte, n int) [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllContext(ctx, b, n)
+}
+func (c *concurrentRegExpImpl) FindAllStringContext(ctx context.Context, s string, n int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllStringContext(ctx, s, n)
+}
+func (c *concurrentRegExpImpl) FindAllIndexContext(ctx context.Context, b []byte, n int) [][]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllIndexContext(ctx, b, n)
+}
+func (c *concurrentRegExpImpl) FindAllStringIndexContext(ctx context.Context, s string, n int) [][]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllStringIndexContext(ctx, s, n)
+}
+func (c *concurrentRegExpImpl) FindSubmatchContext(ctx context.Context, b []byte) [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindSubmatchContext(ctx, b)
+}
+func (c *concurrentRegExpImpl) FindStringSubmatchContext(ctx context.Context, s string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindStringSubmatchContext(ctx, s)
+}
+func (c *concurrentRegExpImpl) FindAllSubmatchContext(ctx context.Context, b []byte, n int) [][][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllSubmatchContext(ctx, b, n)
+}
+func (c *concurrentRegExpImpl) FindAllStringSubmatchContext(ctx context.Context, s string, n int) [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllStringSubmatchContext(ctx, s, n)
+}
+func (c *concurrentRegExpImpl) FindSubmatchIndexContext(ctx context.Context, b []byte) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindSubmatchIndexContext(ctx, b)
+}
+func (c *concurrentRegExpImpl) FindStringSubmatchIndexContext(ctx context.Context, s string) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindStringSubmatchIndexContext(ctx, s)
+}
+func (c *concurrentRegExpImpl) FindAllSubmatchIndexContext(ctx context.Context, b []byte, n int) [][]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllSubmatchIndexContext(ctx, b, n)
+}
+func (c *concurrentRegExpImpl) FindAllStringSubmatchIndexContext(ctx context.Context, s string, n int) [][]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.FindAllStringSubmatchIndexContext(ctx, s, n)
+}
+func (c *concurrentRegExpImpl) SplitContext(ctx context.Context, s string, n int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.SplitContext(ctx, s, n)
+}
+func (c *concurrentRegExpImpl) ReplaceAllContext(ctx context.Context, src, repl []byte) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.ReplaceAllContext(ctx, src, repl)
+}
+func (c *concurrentRegExpImpl) ReplaceAllStringContext(ctx context.Context, s, repl string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.re.ReplaceAllStringContext(ctx, s, repl)
 }

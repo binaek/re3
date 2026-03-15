@@ -1,5 +1,7 @@
 package re3
 
+import "context"
+
 type tokenType int
 
 const (
@@ -306,7 +308,7 @@ func (l *lexer) lexCharacterClass() token {
 	return token{Type: tokenError, Text: "unclosed character class"}
 }
 
-func (l *lexer) lexAll() []token {
+func (l *lexer) lexAll(ctx context.Context) []token {
 	var tokens []token
 	for {
 		tok := l.nextToken()

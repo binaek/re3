@@ -1,9 +1,12 @@
 package re3
 
 import (
+	"context"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -53,6 +56,7 @@ func advancePosAfterEmptyMatchBytes(b []byte, pos int) int {
 
 // regexpImpl is the default lock-free implementation of RegExp.
 type regexpImpl struct {
+	instanceID    uint64
 	minterms      *mintermTable
 	forward       *lazyDFA
 	unanchored    *lazyDFA
@@ -66,13 +70,20 @@ type regexpImpl struct {
 
 // Match reports whether the byte slice b contains any match of the regular expression.
 func (re *regexpImpl) Match(b []byte) bool {
+	return re.MatchContext(context.Background(), b)
+}
+
+// MatchContext reports whether the byte slice b contains any match of the regular expression.
+func (re *regexpImpl) MatchContext(ctx context.Context, b []byte) bool {
+	ctx, end := startSpan(ctx, "Match", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
 	if re.hasAssertions {
-		return re.FindStringIndex(string(b)) != nil
+		return re.FindStringIndexContext(ctx, string(b)) != nil
 	}
 	state := 0
 	for pos := 0; pos < len(b); pos++ {
 		mintermID := re.minterms.ByteToClass[b[pos]]
-		state = re.forward.getNextState(state, mintermID, matchContext{})
+		state = re.forward.getNextState(ctx, state, mintermID, matchContext{})
 	}
 	return re.forward.isAccepting(state)
 }
@@ -80,20 +91,27 @@ func (re *regexpImpl) Match(b []byte) bool {
 // MatchString reports whether the string s contains any match of the regular expression.
 // regexpImpl is not safe for concurrent use; use Clone() per goroutine or Concurrent() for a thread-safe wrapper.
 func (re *regexpImpl) MatchString(s string) bool {
+	return re.MatchStringContext(context.Background(), s)
+}
+
+// MatchStringContext reports whether the string s contains any match of the regular expression.
+func (re *regexpImpl) MatchStringContext(ctx context.Context, s string) bool {
+	ctx, end := startSpan(ctx, "MatchString", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s))
+	defer end()
 	if re.hasAssertions {
-		return re.FindStringIndex(s) != nil
+		return re.FindStringIndexContext(ctx, s) != nil
 	}
 	state := 0
 	for pos := 0; pos < len(s); pos++ {
 		mintermID := re.minterms.ByteToClass[s[pos]]
-		ctx := matchContext{}
+		mctx := matchContext{}
 		if re.hasAssertions {
-			ctx = makeMatchContextString(s, pos)
+			mctx = makeMatchContextString(s, pos)
 		}
-		state = re.forward.getNextState(state, mintermID, ctx)
+		state = re.forward.getNextState(ctx, state, mintermID, mctx)
 	}
 	if re.hasAssertions {
-		return re.forward.isAcceptingWithContext(state, makeMatchContextString(s, len(s)))
+		return re.forward.isAcceptingWithContext(ctx, state, makeMatchContextString(s, len(s)))
 	}
 	return re.forward.isAccepting(state)
 }
@@ -101,20 +119,34 @@ func (re *regexpImpl) MatchString(s string) bool {
 // FindIndex returns a two-element slice of integers defining the location of the leftmost match in b.
 // The match itself is at b[loc[0]:loc[1]]. A return value of nil indicates no match.
 func (re *regexpImpl) FindIndex(b []byte) []int {
-	return re.FindStringIndex(string(b))
+	return re.FindIndexContext(context.Background(), b)
+}
+
+// FindIndexContext returns a two-element slice of integers defining the location of the leftmost match in b.
+func (re *regexpImpl) FindIndexContext(ctx context.Context, b []byte) []int {
+	ctx, end := startSpan(ctx, "FindIndex", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	return re.FindStringIndexContext(ctx, string(b))
 }
 
 // FindStringIndex returns a two-element slice of integers defining the location of the leftmost match in s.
 // The match itself is at s[loc[0]:loc[1]]. A return value of nil indicates no match.
 func (re *regexpImpl) FindStringIndex(s string) []int {
-	return re.findStringIndexFrom(s, 0)
+	return re.FindStringIndexContext(context.Background(), s)
 }
 
-func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
+// FindStringIndexContext returns a two-element slice of integers defining the location of the leftmost match in s.
+func (re *regexpImpl) FindStringIndexContext(ctx context.Context, s string) []int {
+	ctx, end := startSpan(ctx, "FindStringIndex", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s))
+	defer end()
+	return re.findStringIndexFrom(ctx, s, 0)
+}
+
+func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from int) []int {
 	if len(s) == 0 {
 		acceptsEmpty := re.forward.isAccepting(0)
 		if re.hasAssertions {
-			acceptsEmpty = re.forward.isAcceptingWithContext(0, makeMatchContextString(s, 0))
+			acceptsEmpty = re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, 0))
 		}
 		if acceptsEmpty {
 			return []int{0, 0}
@@ -131,7 +163,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	if from == len(s) {
 		acceptsEmpty := re.forward.isAccepting(0)
 		if re.hasAssertions {
-			acceptsEmpty = re.forward.isAcceptingWithContext(0, makeMatchContextString(s, from))
+			acceptsEmpty = re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, from))
 		}
 		if acceptsEmpty {
 			return []int{from, from}
@@ -142,7 +174,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 		return findLlOrLuRepeatFrom(s, from, re.llOrLuRepeat)
 	}
 	if re.hasAssertions {
-		return re.findStringIndexFromWithAssertions(s, from)
+		return re.findStringIndexFromWithAssertions(ctx, s, from)
 	}
 
 	bytePos := from
@@ -157,7 +189,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	firstEnd := -1
 	unanchoredAccepts := re.unanchored.isAccepting(0)
 	if re.hasAssertions {
-		unanchoredAccepts = re.unanchored.isAcceptingWithContext(0, makeMatchContextString(s, from))
+		unanchoredAccepts = re.unanchored.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, from))
 	}
 	if unanchoredAccepts {
 		firstEnd = from
@@ -165,15 +197,15 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
-		ctx := matchContext{}
+		mctx := matchContext{}
 		if re.hasAssertions {
-			ctx = makeMatchContextString(s, bytePos)
+			mctx = makeMatchContextString(s, bytePos)
 		}
-		state = re.unanchored.getNextState(state, mintermID, ctx)
+		state = re.unanchored.getNextState(ctx, state, mintermID, mctx)
 
 		accepts := re.unanchored.isAccepting(state)
 		if re.hasAssertions {
-			accepts = re.unanchored.isAcceptingWithContext(state, makeMatchContextString(s, bytePos+1))
+			accepts = re.unanchored.isAcceptingWithContext(ctx, state, makeMatchContextString(s, bytePos+1))
 		}
 		if accepts {
 			firstEnd = bytePos + 1
@@ -195,17 +227,17 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	for bytePos > from {
 		bytePos--
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
-		ctx := matchContext{}
+		mctx := matchContext{}
 		if re.hasAssertions {
-			ctx = makeMatchContextString(s, bytePos)
+			mctx = makeMatchContextString(s, bytePos)
 		}
-		revState = re.reverse.getNextState(revState, mintermID, ctx)
+		revState = re.reverse.getNextState(ctx, revState, mintermID, mctx)
 		if revState == re.reverse.deadStateID {
 			break
 		}
 		accepts := re.reverse.isAccepting(revState)
 		if re.hasAssertions {
-			accepts = re.reverse.isAcceptingWithContext(revState, makeMatchContextString(s, bytePos))
+			accepts = re.reverse.isAcceptingWithContext(ctx, revState, makeMatchContextString(s, bytePos))
 		}
 		if accepts {
 			leftmostStart = bytePos
@@ -213,7 +245,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	}
 	revStartAccepts := re.reverse.isAccepting(0)
 	if re.hasAssertions {
-		revStartAccepts = re.reverse.isAcceptingWithContext(0, makeMatchContextString(s, firstEnd))
+		revStartAccepts = re.reverse.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, firstEnd))
 	}
 	if leftmostStart == -1 && revStartAccepts {
 		leftmostStart = firstEnd
@@ -227,7 +259,7 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 
 	fwdStartAccepts := re.forward.isAccepting(0)
 	if re.hasAssertions {
-		fwdStartAccepts = re.forward.isAcceptingWithContext(0, makeMatchContextString(s, leftmostStart))
+		fwdStartAccepts = re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, leftmostStart))
 	}
 	if fwdStartAccepts {
 		longestEnd = leftmostStart
@@ -236,15 +268,15 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	bytePos = leftmostStart
 	for bytePos < len(s) {
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
-		ctx := matchContext{}
+		mctx := matchContext{}
 		if re.hasAssertions {
-			ctx = makeMatchContextString(s, bytePos)
+			mctx = makeMatchContextString(s, bytePos)
 		}
-		fwdState = re.forward.getNextState(fwdState, mintermID, ctx)
+		fwdState = re.forward.getNextState(ctx, fwdState, mintermID, mctx)
 
 		accepts := re.forward.isAccepting(fwdState)
 		if re.hasAssertions {
-			accepts = re.forward.isAcceptingWithContext(fwdState, makeMatchContextString(s, bytePos+1))
+			accepts = re.forward.isAcceptingWithContext(ctx, fwdState, makeMatchContextString(s, bytePos+1))
 		}
 		if accepts {
 			longestEnd = bytePos + 1
@@ -258,23 +290,23 @@ func (re *regexpImpl) findStringIndexFrom(s string, from int) []int {
 	return []int{leftmostStart, longestEnd}
 }
 
-func (re *regexpImpl) findStringIndexFromWithAssertions(s string, from int) []int {
+func (re *regexpImpl) findStringIndexFromWithAssertions(ctx context.Context, s string, from int) []int {
 	for start := from; start <= len(s); start++ {
 		state := 0
 		longestEnd := -1
 
-		if re.forward.isAcceptingWithContext(0, makeMatchContextString(s, start)) {
+		if re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, start)) {
 			longestEnd = start
 		}
 
 		for pos := start; pos < len(s); pos++ {
 			mintermID := re.minterms.ByteToClass[s[pos]]
-			ctx := makeMatchContextString(s, pos)
-			state = re.forward.getNextState(state, mintermID, ctx)
+			mctx := makeMatchContextString(s, pos)
+			state = re.forward.getNextState(ctx, state, mintermID, mctx)
 			if state == re.forward.deadStateID {
 				break
 			}
-			if re.forward.isAcceptingWithContext(state, makeMatchContextString(s, pos+1)) {
+			if re.forward.isAcceptingWithContext(ctx, state, makeMatchContextString(s, pos+1)) {
 				longestEnd = pos + 1
 			}
 		}
@@ -320,7 +352,13 @@ func findLlOrLuRepeatFrom(s string, from, need int) []int {
 
 // Find returns a slice holding the text of the leftmost match in b. A return value of nil indicates no match.
 func (re *regexpImpl) Find(b []byte) []byte {
-	loc := re.FindStringIndex(string(b))
+	return re.FindContext(context.Background(), b)
+}
+
+func (re *regexpImpl) FindContext(ctx context.Context, b []byte) []byte {
+	ctx, end := startSpan(ctx, "Find", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	loc := re.FindStringIndexContext(ctx, string(b))
 	if loc == nil {
 		return nil
 	}
@@ -329,7 +367,13 @@ func (re *regexpImpl) Find(b []byte) []byte {
 
 // FindString returns a string holding the text of the leftmost match in s.
 func (re *regexpImpl) FindString(s string) string {
-	loc := re.FindStringIndex(s)
+	return re.FindStringContext(context.Background(), s)
+}
+
+func (re *regexpImpl) FindStringContext(ctx context.Context, s string) string {
+	ctx, end := startSpan(ctx, "FindString", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s))
+	defer end()
+	loc := re.FindStringIndexContext(ctx, s)
 	if loc == nil {
 		return ""
 	}
@@ -339,8 +383,14 @@ func (re *regexpImpl) FindString(s string) string {
 // FindAll is the 'All' version of Find; it returns a slice of all successive matches of the expression in b.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAll(b []byte, n int) [][]byte {
+	return re.FindAllContext(context.Background(), b, n)
+}
+
+func (re *regexpImpl) FindAllContext(ctx context.Context, b []byte, n int) [][]byte {
+	ctx, end := startSpan(ctx, "FindAll", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
 	s := string(b)
-	locs := re.FindAllStringIndex(s, n)
+	locs := re.FindAllStringIndexContext(ctx, s, n)
 	if len(locs) == 0 {
 		return nil
 	}
@@ -354,7 +404,13 @@ func (re *regexpImpl) FindAll(b []byte, n int) [][]byte {
 // FindAllString is the 'All' version of FindString; it returns a slice of all successive matches of the expression.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAllString(s string, n int) []string {
-	locs := re.FindAllStringIndex(s, n)
+	return re.FindAllStringContext(context.Background(), s, n)
+}
+
+func (re *regexpImpl) FindAllStringContext(ctx context.Context, s string, n int) []string {
+	ctx, end := startSpan(ctx, "FindAllString", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.Int("n", n))
+	defer end()
+	locs := re.FindAllStringIndexContext(ctx, s, n)
 	if len(locs) == 0 {
 		return nil
 	}
@@ -368,12 +424,24 @@ func (re *regexpImpl) FindAllString(s string, n int) []string {
 // FindAllIndex is the 'All' version of FindIndex; it returns a slice of all successive matches of the expression in b.
 // A return value of nil indicates no match.
 func (re *regexpImpl) FindAllIndex(b []byte, n int) [][]int {
-	return re.FindAllStringIndex(string(b), n)
+	return re.FindAllIndexContext(context.Background(), b, n)
+}
+
+func (re *regexpImpl) FindAllIndexContext(ctx context.Context, b []byte, n int) [][]int {
+	ctx, end := startSpan(ctx, "FindAllIndex", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	return re.FindAllStringIndexContext(ctx, string(b), n)
 }
 
 // FindAllStringIndex is the 'All' version of FindStringIndex; it returns a slice of all successive matches
 // of the expression. A return value of nil indicates no match.
 func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
+	return re.FindAllStringIndexContext(context.Background(), s, n)
+}
+
+func (re *regexpImpl) FindAllStringIndexContext(ctx context.Context, s string, n int) [][]int {
+	ctx, end := startSpan(ctx, "FindAllStringIndex", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.Int("n", n))
+	defer end()
 	var matches [][]int
 	pos := 0
 	if n < 0 {
@@ -381,7 +449,7 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 	}
 
 	for pos <= len(s) && (n < 0 || len(matches) < n) {
-		loc := re.findStringIndexFrom(s, pos)
+		loc := re.findStringIndexFrom(ctx, s, pos)
 		if loc == nil {
 			break
 		}
@@ -405,7 +473,13 @@ func (re *regexpImpl) FindAllStringIndex(s string, n int) [][]int {
 }
 
 func (re *regexpImpl) FindSubmatch(b []byte) [][]byte {
-	loc := re.FindStringIndex(string(b))
+	return re.FindSubmatchContext(context.Background(), b)
+}
+
+func (re *regexpImpl) FindSubmatchContext(ctx context.Context, b []byte) [][]byte {
+	ctx, end := startSpan(ctx, "FindSubmatch", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	loc := re.FindStringIndexContext(ctx, string(b))
 	if loc == nil {
 		return nil
 	}
@@ -413,10 +487,10 @@ func (re *regexpImpl) FindSubmatch(b []byte) [][]byte {
 		return [][]byte{b[loc[0]:loc[1]]}
 	}
 	if re.forwardTDFA == nil {
-		re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+		re.forwardTDFA = newLazyTDFA(ctx, injectCaptureTags(ctx, re.forward.root), re.minterms, re.CaptureCount)
 	}
 	span := string(b[loc[0]:loc[1]])
-	capture := re.forwardTDFA.runTDFA(span)
+	capture := re.forwardTDFA.runTDFA(ctx, span)
 	if capture == nil {
 		return nil
 	}
@@ -435,7 +509,13 @@ func (re *regexpImpl) FindSubmatch(b []byte) [][]byte {
 // and its capture groups. result[0] is the full match, result[1] the first subgroup, etc.
 // Unmatched groups are empty strings. Uses two-pass: DFA for match span, then TDFA for submatches.
 func (re *regexpImpl) FindStringSubmatch(s string) []string {
-	loc := re.FindStringIndex(s)
+	return re.FindStringSubmatchContext(context.Background(), s)
+}
+
+func (re *regexpImpl) FindStringSubmatchContext(ctx context.Context, s string) []string {
+	ctx, end := startSpan(ctx, "FindStringSubmatch", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s))
+	defer end()
+	loc := re.FindStringIndexContext(ctx, s)
 	if loc == nil {
 		return nil
 	}
@@ -444,10 +524,10 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 		return []string{match}
 	}
 	if re.forwardTDFA == nil {
-		re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+		re.forwardTDFA = newLazyTDFA(ctx, injectCaptureTags(ctx, re.forward.root), re.minterms, re.CaptureCount)
 	}
 	span := s[loc[0]:loc[1]]
-	capture := re.forwardTDFA.runTDFA(span)
+	capture := re.forwardTDFA.runTDFA(ctx, span)
 	if capture == nil {
 		return nil
 	}
@@ -465,10 +545,16 @@ func (re *regexpImpl) FindStringSubmatch(s string) []string {
 }
 
 func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
+	return re.FindAllSubmatchContext(context.Background(), b, n)
+}
+
+func (re *regexpImpl) FindAllSubmatchContext(ctx context.Context, b []byte, n int) [][][]byte {
+	ctx, end := startSpan(ctx, "FindAllSubmatch", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
 	if n < 0 {
 		n = len(b) + 1
 	}
-	locs := re.FindAllStringSubmatchIndex(string(b), n)
+	locs := re.FindAllStringSubmatchIndexContext(ctx, string(b), n)
 	if len(locs) == 0 {
 		return nil
 	}
@@ -488,13 +574,19 @@ func (re *regexpImpl) FindAllSubmatch(b []byte, n int) [][][]byte {
 // FindAllStringSubmatch returns a slice of slices of strings: each inner slice is
 // the result of FindStringSubmatch for one match. If n >= 0, at most n matches are returned.
 func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
+	return re.FindAllStringSubmatchContext(context.Background(), s, n)
+}
+
+func (re *regexpImpl) FindAllStringSubmatchContext(ctx context.Context, s string, n int) [][]string {
+	ctx, end := startSpan(ctx, "FindAllStringSubmatch", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.Int("n", n))
+	defer end()
 	if n < 0 {
 		n = len(s) + 1
 	}
 	var out [][]string
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(out) < n) {
-		loc := re.findStringIndexFrom(s, pos)
+		loc := re.findStringIndexFrom(ctx, s, pos)
 		if loc == nil {
 			break
 		}
@@ -505,9 +597,9 @@ func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
 			out = append(out, []string{span})
 		} else {
 			if re.forwardTDFA == nil {
-				re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+				re.forwardTDFA = newLazyTDFA(ctx, injectCaptureTags(ctx, re.forward.root), re.minterms, re.CaptureCount)
 			}
-			capture := re.forwardTDFA.runTDFA(span)
+			capture := re.forwardTDFA.runTDFA(ctx, span)
 			if capture == nil {
 				out = append(out, []string{span})
 			} else {
@@ -541,11 +633,23 @@ func (re *regexpImpl) FindAllStringSubmatch(s string, n int) [][]string {
 }
 
 func (re *regexpImpl) FindSubmatchIndex(b []byte) []int {
-	return re.FindStringSubmatchIndex(string(b))
+	return re.FindSubmatchIndexContext(context.Background(), b)
+}
+
+func (re *regexpImpl) FindSubmatchIndexContext(ctx context.Context, b []byte) []int {
+	ctx, end := startSpan(ctx, "FindSubmatchIndex", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	return re.FindStringSubmatchIndexContext(ctx, string(b))
 }
 
 func (re *regexpImpl) FindStringSubmatchIndex(s string) []int {
-	loc := re.FindStringIndex(s)
+	return re.FindStringSubmatchIndexContext(context.Background(), s)
+}
+
+func (re *regexpImpl) FindStringSubmatchIndexContext(ctx context.Context, s string) []int {
+	ctx, end := startSpan(ctx, "FindStringSubmatchIndex", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s))
+	defer end()
+	loc := re.FindStringIndexContext(ctx, s)
 	if loc == nil {
 		return nil
 	}
@@ -553,10 +657,10 @@ func (re *regexpImpl) FindStringSubmatchIndex(s string) []int {
 		return []int{loc[0], loc[1]}
 	}
 	if re.forwardTDFA == nil {
-		re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+		re.forwardTDFA = newLazyTDFA(ctx, injectCaptureTags(ctx, re.forward.root), re.minterms, re.CaptureCount)
 	}
 	span := s[loc[0]:loc[1]]
-	capture := re.forwardTDFA.runTDFA(span)
+	capture := re.forwardTDFA.runTDFA(ctx, span)
 	if capture == nil {
 		return nil
 	}
@@ -573,14 +677,31 @@ func (re *regexpImpl) FindStringSubmatchIndex(s string) []int {
 }
 
 func (re *regexpImpl) FindAllSubmatchIndex(b []byte, n int) [][]int {
-	return re.FindAllStringSubmatchIndex(string(b), n)
+	return re.FindAllSubmatchIndexContext(context.Background(), b, n)
+}
+
+func (re *regexpImpl) FindAllSubmatchIndexContext(ctx context.Context, b []byte, n int) [][]int {
+	ctx, end := startSpan(ctx, "FindAllSubmatchIndex", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
+	return re.FindAllStringSubmatchIndexContext(ctx, string(b), n)
 }
 
 func (re *regexpImpl) FindAllStringSubmatchIndex(s string, n int) [][]int {
+	return re.FindAllStringSubmatchIndexContext(context.Background(), s, n)
+}
+
+func (re *regexpImpl) FindAllStringSubmatchIndexContext(ctx context.Context, s string, n int) [][]int {
+	ctx, end := startSpan(ctx, "FindAllStringSubmatchIndex", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.Int("n", n))
+	defer end()
+
+	if n < 0 {
+		n = len(s) + 1
+	}
+
 	var out [][]int
 	pos := 0
 	for pos <= len(s) && (n < 0 || len(out) < n) {
-		loc := re.findStringIndexFrom(s, pos)
+		loc := re.findStringIndexFrom(ctx, s, pos)
 		if loc == nil {
 			break
 		}
@@ -591,10 +712,10 @@ func (re *regexpImpl) FindAllStringSubmatchIndex(s string, n int) [][]int {
 			out = append(out, []int{start, end})
 		} else {
 			if re.forwardTDFA == nil {
-				re.forwardTDFA = newLazyTDFA(injectCaptureTags(re.forward.root), re.minterms, re.CaptureCount)
+				re.forwardTDFA = newLazyTDFA(ctx, injectCaptureTags(ctx, re.forward.root), re.minterms, re.CaptureCount)
 			}
 			span := s[start:end]
-			capture := re.forwardTDFA.runTDFA(span)
+			capture := re.forwardTDFA.runTDFA(ctx, span)
 			if capture == nil {
 				out = append(out, []int{start, end})
 			} else {
@@ -630,6 +751,12 @@ func (re *regexpImpl) FindAllStringSubmatchIndex(s string, n int) [][]int {
 // the substrings between those expression matches. If n > 0, at most n substrings are
 // returned; the last substring will be the unsplit remainder. If n <= 0, there is no limit.
 func (re *regexpImpl) Split(s string, n int) []string {
+	return re.SplitContext(context.Background(), s, n)
+}
+
+func (re *regexpImpl) SplitContext(ctx context.Context, s string, n int) []string {
+	ctx, end := startSpan(ctx, "Split", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.Int("n", n))
+	defer end()
 	if n == 0 {
 		return nil
 	}
@@ -644,7 +771,7 @@ func (re *regexpImpl) Split(s string, n int) []string {
 	maxSplits := n - 1
 
 	for pos <= len(s) {
-		loc := re.findStringIndexFrom(s, pos)
+		loc := re.findStringIndexFrom(ctx, s, pos)
 		if loc == nil {
 			result = append(result, s[pos:])
 			break
@@ -676,11 +803,17 @@ func (re *regexpImpl) Split(s string, n int) []string {
 
 // ReplaceAll returns a copy of src, replacing matches of the expression with repl.
 func (re *regexpImpl) ReplaceAll(src, repl []byte) []byte {
+	return re.ReplaceAllContext(context.Background(), src, repl)
+}
+
+func (re *regexpImpl) ReplaceAllContext(ctx context.Context, src, repl []byte) []byte {
+	ctx, end := startSpan(ctx, "ReplaceAll", attribute.Int64("instance_id", int64(re.instanceID)))
+	defer end()
 	var buf []byte
 	pos := 0
 
 	for pos <= len(src) {
-		loc := re.FindIndex(src[pos:])
+		loc := re.FindIndexContext(ctx, src[pos:])
 		if loc == nil {
 			buf = append(buf, src[pos:]...)
 			break
@@ -708,11 +841,17 @@ func (re *regexpImpl) ReplaceAll(src, repl []byte) []byte {
 
 // ReplaceAllString returns a copy of s, replacing matches of the expression with repl.
 func (re *regexpImpl) ReplaceAllString(s, repl string) string {
+	return re.ReplaceAllStringContext(context.Background(), s, repl)
+}
+
+func (re *regexpImpl) ReplaceAllStringContext(ctx context.Context, s, repl string) string {
+	ctx, end := startSpan(ctx, "ReplaceAllString", attribute.Int64("instance_id", int64(re.instanceID)), attribute.String("s", s), attribute.String("repl", repl))
+	defer end()
 	var buf []byte
 	pos := 0
 
 	for pos <= len(s) {
-		loc := re.findStringIndexFrom(s, pos)
+		loc := re.findStringIndexFrom(ctx, s, pos)
 		if loc == nil {
 			buf = append(buf, s[pos:]...)
 			break
@@ -738,14 +877,20 @@ func (re *regexpImpl) ReplaceAllString(s, repl string) string {
 	return string(buf)
 }
 
+// InstanceID returns a unique ID for this regexp instance, for separating logs and metrics.
+func (re *regexpImpl) InstanceID() uint64 {
+	return re.instanceID
+}
+
 // Clone returns a new RegExp that shares minterms and root ASTs but has fresh
 // lazy DFA caches. Safe to use the original and clone in different goroutines.
 func (re *regexpImpl) Clone() RegExp {
 	return &regexpImpl{
+		instanceID:    nextInstanceID.Add(1),
 		minterms:      re.minterms,
-		forward:       newLazyDFA(re.forward.root, re.minterms),
-		unanchored:    newLazyDFA(re.unanchored.root, re.minterms),
-		reverse:       newLazyDFA(re.reverse.root, re.minterms),
+		forward:       newLazyDFA(context.Background(), re.forward.root, re.minterms),
+		unanchored:    newLazyDFA(context.Background(), re.unanchored.root, re.minterms),
+		reverse:       newLazyDFA(context.Background(), re.reverse.root, re.minterms),
 		prefix:        re.prefix,
 		CaptureCount:  re.CaptureCount,
 		hasAssertions: re.hasAssertions,

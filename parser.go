@@ -1,6 +1,7 @@
 package re3
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"unicode"
@@ -27,40 +28,41 @@ type parser struct {
 	caseInsensitive bool
 	dotAll          bool
 	unicodeMode     bool
-	prefixParseFns  map[tokenType]func() (node, error)
-	infixParseFns   map[tokenType]func(node) (node, error)
+	prefixParseFns  map[tokenType]func(context.Context) (node, error)
+	infixParseFns   map[tokenType]func(context.Context, node) (node, error)
 }
 
 func newParser(tokens []token, expr string) *parser {
 	p := &parser{tokens: tokens, pos: -1, expr: expr}
-	p.prefixParseFns = map[tokenType]func() (node, error){
-		tokenLiteral:                p.parseLiteral,
-		tokenEscape:                 p.parseEscape,
-		tokenCharClass:              p.parseCharClass,
-		tokenLParen:                 p.parseGroup,
-		tokenDot:                    p.parseDot,
-		tokenLookAhead:              p.parseLookAhead,
-		tokenLookBehind:             p.parseLookBehind,
-		tokenNonCapParen:            p.parseNonCapGroup,
-		tokenInlineFlags:            p.parseInlineFlags,
-		tokenEmpty:                  func() (node, error) { return &emptyNode{}, nil },
-		tokenStart:                  func() (node, error) { return &startNode{}, nil },
-		tokenEnd:                    func() (node, error) { return &endNode{}, nil },
-		tokenWordBoundary: func() (node, error) {
-			return &wordBoundaryNode{Unicode: p.unicodeMode}, nil
+	p.prefixParseFns = map[tokenType]func(context.Context) (node, error){
+		tokenLiteral:     p.parseLiteral,
+		tokenEscape:      p.parseEscape,
+		tokenCharClass:   p.parseCharClass,
+		tokenLParen:      p.parseGroup,
+		tokenDot:         p.parseDot,
+		tokenLookAhead:   p.parseLookAhead,
+		tokenLookBehind:  p.parseLookBehind,
+		tokenNonCapParen: p.parseNonCapGroup,
+		tokenInlineFlags: p.parseInlineFlags,
+		tokenComplement:  p.parseComplement,
+		tokenEmpty:       func(ctx context.Context) (node, error) { return newEmptyNode(ctx), nil },
+		tokenStart:       func(ctx context.Context) (node, error) { return newStartNode(ctx), nil },
+		tokenEnd:         func(ctx context.Context) (node, error) { return newEndNode(ctx), nil },
+		tokenWordBoundary: func(ctx context.Context) (node, error) {
+			return newWordBoundaryNode(ctx, p.unicodeMode), nil
 		},
-		tokenNotWordBoundary: func() (node, error) {
-			return &notWordBoundaryNode{Unicode: p.unicodeMode}, nil
+		tokenNotWordBoundary: func(ctx context.Context) (node, error) {
+			return newNotWordBoundaryNode(ctx, p.unicodeMode), nil
 		},
-		tokenBeginText:              func() (node, error) { return &beginTextNode{}, nil },
-		tokenEndText:                func() (node, error) { return &endTextNode{}, nil },
-		tokenEndTextOptionalNewline: func() (node, error) { return &endTextOptionalNewlineNode{}, nil },
-		tokenComma:                  func() (node, error) { return lowerRuneLiteral(','), nil },
-		tokenLBrace:                 func() (node, error) { return lowerRuneLiteral('{'), nil },
-		tokenRBrace:                 func() (node, error) { return lowerRuneLiteral('}'), nil },
+		tokenBeginText:              func(ctx context.Context) (node, error) { return newBeginTextNode(ctx), nil },
+		tokenEndText:                func(ctx context.Context) (node, error) { return newEndTextNode(ctx), nil },
+		tokenEndTextOptionalNewline: func(ctx context.Context) (node, error) { return newEndTextOptionalNewlineNode(ctx), nil },
+		tokenComma:                  func(ctx context.Context) (node, error) { return lowerRuneLiteral(ctx, ','), nil },
+		tokenLBrace:                 func(ctx context.Context) (node, error) { return lowerRuneLiteral(ctx, '{'), nil },
+		tokenRBrace:                 func(ctx context.Context) (node, error) { return lowerRuneLiteral(ctx, '}'), nil },
 		tokenUnion:                  p.parseEmptyLeftUnion,
 	}
-	p.infixParseFns = map[tokenType]func(node) (node, error){
+	p.infixParseFns = map[tokenType]func(context.Context, node) (node, error){
 		tokenUnion:     p.parseUnion,
 		tokenIntersect: p.parseIntersect,
 		tokenStar:      p.parseStar,
@@ -83,14 +85,14 @@ func (p *parser) nextToken() {
 	}
 }
 
-func (p *parser) parse() (node, error) {
+func (p *parser) parse(ctx context.Context) (node, error) {
 	if p.curToken.Type == tokenEOF {
-		return &emptyNode{}, nil
+		return newEmptyNode(ctx), nil
 	}
-	return p.parseExpression(LOWEST)
+	return p.parseExpression(ctx, LOWEST)
 }
 
-func (p *parser) parseExpression(precedence int) (node, error) {
+func (p *parser) parseExpression(ctx context.Context, precedence int) (node, error) {
 	prefix := p.prefixParseFns[p.curToken.Type]
 	if prefix == nil {
 		if p.curToken.Type == tokenStar || p.curToken.Type == tokenPlus || p.curToken.Type == tokenQuestion {
@@ -98,7 +100,7 @@ func (p *parser) parseExpression(precedence int) (node, error) {
 		}
 		return nil, &Error{Code: ErrInternalError, Expr: p.expr}
 	}
-	leftExp, err := prefix()
+	leftExp, err := prefix(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +109,7 @@ func (p *parser) parseExpression(precedence int) (node, error) {
 		infix := p.infixParseFns[p.peekToken.Type]
 		if infix == nil {
 			if p.isPeekStartOfExpression() {
-				leftExp, err = p.parseImplicitConcat(leftExp)
+				leftExp, err = p.parseImplicitConcat(ctx, leftExp)
 				if err != nil {
 					return nil, err
 				}
@@ -116,7 +118,7 @@ func (p *parser) parseExpression(precedence int) (node, error) {
 			return leftExp, nil
 		}
 		p.nextToken()
-		leftExp, err = infix(leftExp)
+		leftExp, err = infix(ctx, leftExp)
 		if err != nil {
 			return nil, err
 		}
@@ -125,54 +127,54 @@ func (p *parser) parseExpression(precedence int) (node, error) {
 }
 
 // --- PARSING HANDLERS ---
-func (p *parser) parseLiteral() (node, error) {
-	return p.literalRuneNode(p.curToken.Value), nil
+func (p *parser) parseLiteral(ctx context.Context) (node, error) {
+	return p.literalRuneNode(ctx, p.curToken.Value), nil
 }
 
-func (p *parser) parseEscape() (node, error) {
+func (p *parser) parseEscape(ctx context.Context) (node, error) {
 	val := p.curToken.Value
 	switch val {
 	case 'd', 'w', 's', 'D', 'W', 'S':
 		if p.unicodeMode {
-			return unicodeEscapeNode(val), nil
+			return unicodeEscapeNode(ctx, val), nil
 		}
-		return &charClassNode{Class: "\\" + string(val)}, nil
+		return newCharClassNode(ctx, "\\"+string(val), predicate{}), nil
 	case 'n':
-		return p.literalRuneNode('\n'), nil
+		return p.literalRuneNode(ctx, '\n'), nil
 	case 'r':
-		return p.literalRuneNode('\r'), nil
+		return p.literalRuneNode(ctx, '\r'), nil
 	case 't':
-		return p.literalRuneNode('\t'), nil
+		return p.literalRuneNode(ctx, '\t'), nil
 	case 'v':
-		return p.literalRuneNode('\v'), nil
+		return p.literalRuneNode(ctx, '\v'), nil
 	case 'f':
-		return p.literalRuneNode('\f'), nil
+		return p.literalRuneNode(ctx, '\f'), nil
 	case 'a':
-		return p.literalRuneNode('\a'), nil
+		return p.literalRuneNode(ctx, '\a'), nil
 	}
-	return p.literalRuneNode(val), nil
+	return p.literalRuneNode(ctx, val), nil
 }
-func (p *parser) parseCharClass() (node, error) {
-	return compileCharClassNode(p.curToken.Text, p.caseInsensitive, p.unicodeMode), nil
+func (p *parser) parseCharClass(ctx context.Context) (node, error) {
+	return compileCharClassNode(ctx, p.curToken.Text, p.caseInsensitive, p.unicodeMode), nil
 }
-func (p *parser) parseComplement() (node, error) {
+func (p *parser) parseComplement(ctx context.Context) (node, error) {
 	p.nextToken()
-	child, err := p.parseExpression(PREFIX)
+	child, err := p.parseExpression(ctx, PREFIX)
 	if err != nil {
 		return nil, err
 	}
-	return newComplementNode(child), nil
+	return newComplementNode(ctx, child), nil
 }
-func (p *parser) parseGroup() (node, error) {
+func (p *parser) parseGroup(ctx context.Context) (node, error) {
 	p.nextToken()
 	p.groupCount++
 	id := p.groupCount
 
 	if p.curToken.Type == tokenRParen {
-		return &groupNode{GroupID: id, Child: &emptyNode{}}, nil
+		return newGroupNode(ctx, id, newEmptyNode(ctx)), nil
 	}
 
-	exp, err := p.parseExpression(LOWEST)
+	exp, err := p.parseExpression(ctx, LOWEST)
 	if err != nil {
 		return nil, err
 	}
@@ -180,10 +182,10 @@ func (p *parser) parseGroup() (node, error) {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &groupNode{GroupID: id, Child: exp}, nil
+	return newGroupNode(ctx, id, exp), nil
 }
 
-func (p *parser) parseNonCapGroup() (node, error) {
+func (p *parser) parseNonCapGroup(ctx context.Context) (node, error) {
 	prevCaseInsensitive := p.caseInsensitive
 	prevDotAll := p.dotAll
 	prevUnicodeMode := p.unicodeMode
@@ -197,10 +199,10 @@ func (p *parser) parseNonCapGroup() (node, error) {
 	p.nextToken()
 
 	if p.curToken.Type == tokenRParen {
-		return &emptyNode{}, nil
+		return newEmptyNode(ctx), nil
 	}
 
-	exp, err := p.parseExpression(LOWEST)
+	exp, err := p.parseExpression(ctx, LOWEST)
 	if err != nil {
 		return nil, err
 	}
@@ -210,11 +212,11 @@ func (p *parser) parseNonCapGroup() (node, error) {
 	p.nextToken()
 	return exp, nil
 }
-func (p *parser) parseUnion(left node) (node, error) {
+func (p *parser) parseUnion(ctx context.Context, left node) (node, error) {
 	acc := left
 	for {
 		if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
-			acc = newUnionNode(acc, &emptyNode{})
+			acc = newUnionNode(ctx, acc, newEmptyNode(ctx))
 			if p.peekToken.Type == tokenUnion {
 				// Consume repeated empty alternations like a||b iteratively.
 				p.nextToken()
@@ -223,11 +225,11 @@ func (p *parser) parseUnion(left node) (node, error) {
 			return acc, nil
 		}
 		p.nextToken()
-		right, err := p.parseExpression(UNION)
+		right, err := p.parseExpression(ctx, UNION)
 		if err != nil {
 			return nil, err
 		}
-		acc = newUnionNode(acc, right)
+		acc = newUnionNode(ctx, acc, right)
 		if p.peekToken.Type != tokenUnion {
 			return acc, nil
 		}
@@ -235,21 +237,25 @@ func (p *parser) parseUnion(left node) (node, error) {
 		p.nextToken()
 	}
 }
-func (p *parser) parseIntersect(left node) (node, error) {
+func (p *parser) parseIntersect(ctx context.Context, left node) (node, error) {
 	p.nextToken()
-	right, err := p.parseExpression(INTERSECT)
+	right, err := p.parseExpression(ctx, INTERSECT)
 	if err != nil {
 		return nil, err
 	}
-	return newIntersectNode(left, right), nil
+	return newIntersectNode(ctx, left, right), nil
 }
-func (p *parser) parseStar(left node) (node, error) { return &starNode{Child: left}, nil }
-func (p *parser) parsePlus(left node) (node, error) {
-	return newConcatNode(left, &starNode{Child: left}), nil
+func (p *parser) parseStar(ctx context.Context, left node) (node, error) {
+	return newStarNode(ctx, left), nil
 }
-func (p *parser) parseQuestion(left node) (node, error) { return newUnionNode(left, &emptyNode{}), nil }
+func (p *parser) parsePlus(ctx context.Context, left node) (node, error) {
+	return newConcatNode(ctx, left, newStarNode(ctx, left)), nil
+}
+func (p *parser) parseQuestion(ctx context.Context, left node) (node, error) {
+	return newUnionNode(ctx, left, newEmptyNode(ctx)), nil
+}
 
-func (p *parser) parseBoundedRepeat(left node) (node, error) {
+func (p *parser) parseBoundedRepeat(ctx context.Context, left node) (node, error) {
 	p.nextToken() // curToken is now the number
 	n, _ := strconv.Atoi(p.curToken.Text)
 	p.nextToken() // curToken is now ',' or '}'
@@ -259,9 +265,9 @@ func (p *parser) parseBoundedRepeat(left node) (node, error) {
 		if p.curToken.Type == tokenRBrace {
 			// e.g. {n,} -> Repeat exact `n` times, followed by a Star
 			if n == 0 {
-				return &starNode{Child: left}, nil
+				return newStarNode(ctx, left), nil
 			}
-			return newConcatNode(newRepeatNode(left, n, n), &starNode{Child: left}), nil
+			return newConcatNode(ctx, newRepeatNode(ctx, left, n, n), newStarNode(ctx, left)), nil
 		}
 
 		m, _ := strconv.Atoi(p.curToken.Text)
@@ -270,23 +276,23 @@ func (p *parser) parseBoundedRepeat(left node) (node, error) {
 		if n > m {
 			return nil, &Error{Code: ErrInvalidRepeatSize, Expr: p.expr}
 		}
-		return newRepeatNode(left, n, m), nil
+		return newRepeatNode(ctx, left, n, m), nil
 	}
 
 	// Exact repeat {n}
-	return newRepeatNode(left, n, n), nil
+	return newRepeatNode(ctx, left, n, n), nil
 }
 
-func (p *parser) parseEmptyLeftUnion() (node, error) {
+func (p *parser) parseEmptyLeftUnion(ctx context.Context) (node, error) {
 	if p.peekToken.Type == tokenRParen || p.peekToken.Type == tokenUnion || p.peekToken.Type == tokenEOF {
-		return newUnionNode(&emptyNode{}, &emptyNode{}), nil
+		return newUnionNode(ctx, newEmptyNode(ctx), newEmptyNode(ctx)), nil
 	}
 	p.nextToken()
-	right, err := p.parseExpression(UNION)
+	right, err := p.parseExpression(ctx, UNION)
 	if err != nil {
 		return nil, err
 	}
-	return newUnionNode(&emptyNode{}, right), nil
+	return newUnionNode(ctx, newEmptyNode(ctx), right), nil
 }
 
 func (p *parser) isPeekStartOfExpression() bool {
@@ -298,35 +304,35 @@ func (p *parser) isPeekStartOfExpression() bool {
 		t == tokenBeginText || t == tokenEndText || t == tokenEndTextOptionalNewline ||
 		t == tokenComma || t == tokenLBrace || t == tokenRBrace
 }
-func (p *parser) parseImplicitConcat(left node) (node, error) {
+func (p *parser) parseImplicitConcat(ctx context.Context, left node) (node, error) {
 	p.nextToken()
-	right, err := p.parseExpression(CONCAT)
+	right, err := p.parseExpression(ctx, CONCAT)
 	if err != nil {
 		return nil, err
 	}
-	return newConcatNode(left, right), nil
+	return newConcatNode(ctx, left, right), nil
 }
-func (p *parser) parseDot() (node, error) {
+func (p *parser) parseDot(ctx context.Context) (node, error) {
 	if p.unicodeMode {
 		if p.dotAll {
-			return newAnyRuneNode(false), nil
+			return newAnyRuneNode(ctx, false), nil
 		}
-		return newAnyNode(), nil
+		return newAnyNode(ctx), nil
 	}
 	if p.dotAll {
-		return &anyByteNode{}, nil
+		return newAnyByteNode(ctx), nil
 	}
-	return &anyNode{}, nil
+	return newAnyNodeSimple(ctx), nil
 }
 
-func (p *parser) parseInlineFlags() (node, error) {
+func (p *parser) parseInlineFlags(ctx context.Context) (node, error) {
 	p.applyInlineFlags(p.curToken.Text)
-	return &emptyNode{}, nil
+	return newEmptyNode(ctx), nil
 }
 
-func (p *parser) parseLookAhead() (node, error) {
+func (p *parser) parseLookAhead(ctx context.Context) (node, error) {
 	p.nextToken()
-	child, err := p.parseExpression(LOWEST)
+	child, err := p.parseExpression(ctx, LOWEST)
 	if err != nil {
 		return nil, err
 	}
@@ -334,12 +340,12 @@ func (p *parser) parseLookAhead() (node, error) {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &lookAheadNode{Child: child}, nil
+	return newLookAheadNode(ctx, child), nil
 }
 
-func (p *parser) parseLookBehind() (node, error) {
+func (p *parser) parseLookBehind(ctx context.Context) (node, error) {
 	p.nextToken()
-	child, err := p.parseExpression(LOWEST)
+	child, err := p.parseExpression(ctx, LOWEST)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +353,7 @@ func (p *parser) parseLookBehind() (node, error) {
 		return nil, &Error{Code: ErrMissingParen, Expr: p.expr}
 	}
 	p.nextToken()
-	return &lookBehindNode{Child: child}, nil
+	return newLookBehindNode(ctx, child), nil
 }
 func (p *parser) peekPrecedence() int {
 	if p.isPeekStartOfExpression() {
@@ -367,38 +373,38 @@ func (p *parser) peekPrecedence() int {
 	return LOWEST
 }
 
-func lowerRuneLiteral(r rune) node {
+func lowerRuneLiteral(ctx context.Context, r rune) node {
 	var buf [utf8.UTFMax]byte
 	n := utf8.EncodeRune(buf[:], r)
 	if n == 1 {
-		return &literalNode{Value: buf[0]}
+		return newLiteralNode(ctx, buf[0])
 	}
-	out := node(&literalNode{Value: buf[0]})
+	out := node(newLiteralNode(ctx, buf[0]))
 	for i := 1; i < n; i++ {
-		out = newConcatNode(out, &literalNode{Value: buf[i]})
+		out = newConcatNode(ctx, out, newLiteralNode(ctx, buf[i]))
 	}
 	return out
 }
 
-func (p *parser) literalRuneNode(r rune) node {
+func (p *parser) literalRuneNode(ctx context.Context, r rune) node {
 	if !p.caseInsensitive {
-		return lowerRuneLiteral(r)
+		return lowerRuneLiteral(ctx, r)
 	}
 	if !p.unicodeMode {
 		if r >= 'a' && r <= 'z' {
-			return unionNodes(lowerRuneLiteral(r), lowerRuneLiteral(r-'a'+'A'))
+			return unionNodes(ctx, lowerRuneLiteral(ctx, r), lowerRuneLiteral(ctx, r-'a'+'A'))
 		}
 		if r >= 'A' && r <= 'Z' {
-			return unionNodes(lowerRuneLiteral(r), lowerRuneLiteral(r-'A'+'a'))
+			return unionNodes(ctx, lowerRuneLiteral(ctx, r), lowerRuneLiteral(ctx, r-'A'+'a'))
 		}
-		return lowerRuneLiteral(r)
+		return lowerRuneLiteral(ctx, r)
 	}
 	folds := map[rune]struct{}{r: {}}
 	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 		folds[f] = struct{}{}
 	}
 	if len(folds) == 1 {
-		return lowerRuneLiteral(r)
+		return lowerRuneLiteral(ctx, r)
 	}
 	runes := make([]rune, 0, len(folds))
 	for rr := range folds {
@@ -407,9 +413,9 @@ func (p *parser) literalRuneNode(r rune) node {
 	sort.Slice(runes, func(i, j int) bool { return runes[i] < runes[j] })
 	var nodes []node
 	for _, rr := range runes {
-		nodes = append(nodes, lowerRuneLiteral(rr))
+		nodes = append(nodes, lowerRuneLiteral(ctx, rr))
 	}
-	return unionNodes(nodes...)
+	return unionNodes(ctx, nodes...)
 }
 
 func (p *parser) applyInlineFlags(flags string) {
@@ -433,35 +439,35 @@ func (p *parser) applyInlineFlags(flags string) {
 	}
 }
 
-func unicodeEscapeNode(val rune) node {
+func unicodeEscapeNode(ctx context.Context, val rune) node {
 	switch val {
 	case 'd':
-		return compileUnicodeProperty("Nd")
+		return compileUnicodeProperty(ctx, "Nd")
 	case 'D':
-		return newIntersectNode(newAnyRuneNode(false), newComplementNode(compileUnicodeProperty("Nd")))
+		return newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, compileUnicodeProperty(ctx, "Nd")))
 	case 's':
-		return compileUnicodeProperty("White_Space")
+		return compileUnicodeProperty(ctx, "White_Space")
 	case 'S':
-		return newIntersectNode(newAnyRuneNode(false), newComplementNode(compileUnicodeProperty("White_Space")))
+		return newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, compileUnicodeProperty(ctx, "White_Space")))
 	case 'w':
-		word := unionNodes(
-			compileUnicodeProperty("L"),
-			compileUnicodeProperty("M"),
-			compileUnicodeProperty("N"),
-			compileUnicodeProperty("Pc"),
-			compileUnicodeProperty("Join_Control"),
+		word := unionNodes(ctx,
+			compileUnicodeProperty(ctx, "L"),
+			compileUnicodeProperty(ctx, "M"),
+			compileUnicodeProperty(ctx, "N"),
+			compileUnicodeProperty(ctx, "Pc"),
+			compileUnicodeProperty(ctx, "Join_Control"),
 		)
 		return word
 	case 'W':
-		word := unionNodes(
-			compileUnicodeProperty("L"),
-			compileUnicodeProperty("M"),
-			compileUnicodeProperty("N"),
-			compileUnicodeProperty("Pc"),
-			compileUnicodeProperty("Join_Control"),
+		word := unionNodes(ctx,
+			compileUnicodeProperty(ctx, "L"),
+			compileUnicodeProperty(ctx, "M"),
+			compileUnicodeProperty(ctx, "N"),
+			compileUnicodeProperty(ctx, "Pc"),
+			compileUnicodeProperty(ctx, "Join_Control"),
 		)
-		return newIntersectNode(newAnyRuneNode(false), newComplementNode(word))
+		return newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, word))
 	default:
-		return lowerRuneLiteral(val)
+		return lowerRuneLiteral(ctx, val)
 	}
 }

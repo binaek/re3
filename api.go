@@ -1,5 +1,9 @@
 package re3
 
+import (
+	"context"
+)
+
 // RegExp is the interface implemented by both the default and thread-safe regexp implementations.
 type RegExp interface {
 	// Match reports whether the byte slice b contains any match of the regular expression.
@@ -80,6 +84,13 @@ type RegExp interface {
 	Clone() RegExp
 }
 
+// RegExpWithInstanceID is optionally implemented by RegExp to expose an instance ID
+// for separating logs and metrics across different compiled instances.
+type RegExpWithInstanceID interface {
+	RegExp
+	InstanceID() uint64
+}
+
 func MustCompile(expr string) RegExp {
 	re, err := Compile(expr)
 	if err != nil {
@@ -102,6 +113,12 @@ func Concurrent(re RegExp) RegExp {
 }
 
 // Compile compiles a regular expression into a RegExp.
+// It is equivalent to CompileContext(context.Background(), expr).
 func Compile(expr string) (RegExp, error) {
-	return compile(expr)
+	return CompileContext(context.Background(), expr)
+}
+
+// CompileContext compiles a regular expression into a RegExp, using ctx for tracing and cancellation.
+func CompileContext(ctx context.Context, expr string) (RegExpContext, error) {
+	return compile(ctx, expr)
 }
