@@ -19,19 +19,19 @@ type falseNode struct {
 	fp uint64
 }
 
-func newFalseNode(ctx context.Context) *falseNode {
+func newFalseNode(_ context.Context) *falseNode {
 	return &falseNode{fp: mixFingerprint(fingerprintSeed, 1)}
 }
 
-func newEmptyNode(ctx context.Context) *emptyNode {
+func newEmptyNode(_ context.Context) *emptyNode {
 	return &emptyNode{fp: mixFingerprint(fingerprintSeed, 2)}
 }
 
-func (n *falseNode) Nullable(_ context.Context, _ matchContext) bool { return false }
+func (n *falseNode) Nullable(_ context.Context, _ matchContext) bool           { return false }
 func (n *falseNode) Derivative(_ context.Context, _ byte, _ matchContext) node { return n }
-func (n *falseNode) Equals(other node) bool                 { _, ok := other.(*falseNode); return ok }
-func (n *falseNode) Reverse() node                          { return n }
-func (n *falseNode) String() string                         { return "False" }
+func (n *falseNode) Equals(other node) bool                                    { _, ok := other.(*falseNode); return ok }
+func (n *falseNode) Reverse() node                                             { return n }
+func (n *falseNode) String() string                                            { return "False" }
 func (n *falseNode) FingerPrint(_ context.Context) uint64 {
 	if n.fp != 0 {
 		return n.fp
@@ -48,9 +48,9 @@ func (n *emptyNode) Nullable(_ context.Context, _ matchContext) bool { return tr
 func (n *emptyNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newFalseNode(ctx)
 }
-func (n *emptyNode) Equals(other node) bool                 { _, ok := other.(*emptyNode); return ok }
-func (n *emptyNode) Reverse() node                          { return n }
-func (n *emptyNode) String() string                         { return "Empty" }
+func (n *emptyNode) Equals(other node) bool { _, ok := other.(*emptyNode); return ok }
+func (n *emptyNode) Reverse() node          { return n }
+func (n *emptyNode) String() string         { return "Empty" }
 func (n *emptyNode) FingerPrint(_ context.Context) uint64 {
 	if n.fp != 0 {
 		return n.fp
@@ -64,7 +64,7 @@ type literalNode struct {
 	fp    uint64
 }
 
-func newLiteralNode(ctx context.Context, value byte) *literalNode {
+func newLiteralNode(_ context.Context, value byte) *literalNode {
 	return &literalNode{Value: value}
 }
 
@@ -93,7 +93,7 @@ type anyNode struct {
 	fp uint64
 }
 
-func newAnyNodeSimple(ctx context.Context) *anyNode {
+func newAnyNodeSimple(_ context.Context) *anyNode {
 	return &anyNode{}
 }
 
@@ -122,7 +122,7 @@ type anyByteNode struct {
 	fp uint64
 }
 
-func newAnyByteNode(ctx context.Context) *anyByteNode {
+func newAnyByteNode(_ context.Context) *anyByteNode {
 	return &anyByteNode{fp: mixFingerprint(fingerprintSeed, 23)}
 }
 
@@ -130,9 +130,9 @@ func (n *anyByteNode) Nullable(_ context.Context, _ matchContext) bool { return 
 func (n *anyByteNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newEmptyNode(ctx)
 }
-func (n *anyByteNode) Equals(other node) bool   { _, ok := other.(*anyByteNode); return ok }
-func (n *anyByteNode) Reverse() node            { return n }
-func (n *anyByteNode) String() string           { return "AnyByte" }
+func (n *anyByteNode) Equals(other node) bool { _, ok := other.(*anyByteNode); return ok }
+func (n *anyByteNode) Reverse() node          { return n }
+func (n *anyByteNode) String() string         { return "AnyByte" }
 func (n *anyByteNode) FingerPrint(_ context.Context) uint64 {
 	if n.fp != 0 {
 		return n.fp
@@ -147,7 +147,7 @@ type charClassNode struct {
 	fp    uint64
 }
 
-func newCharClassNode(ctx context.Context, class string, pred predicate) *charClassNode {
+func newCharClassNode(_ context.Context, class string, pred predicate) *charClassNode {
 	return &charClassNode{Class: class, Pred: pred}
 }
 
@@ -213,7 +213,9 @@ func (n *complementNode) Equals(other node) bool {
 	o, ok := other.(*complementNode)
 	return ok && n.Child.Equals(o.Child)
 }
-func (n *complementNode) Reverse() node { return newComplementNode(context.Background(), n.Child.Reverse()) }
+func (n *complementNode) Reverse() node {
+	return newComplementNode(context.Background(), n.Child.Reverse())
+}
 func (n *complementNode) String() string { return fmt.Sprintf("Comp(%s)", n.Child.String()) }
 func (n *complementNode) FingerPrint(ctx context.Context) uint64 {
 	return mixFingerprint(mixFingerprint(fingerprintSeed, 8), n.Child.FingerPrint(ctx))
@@ -224,7 +226,7 @@ type starNode struct {
 	fp    uint64
 }
 
-func newStarNode(ctx context.Context, child node) *starNode {
+func newStarNode(_ context.Context, child node) *starNode {
 	return &starNode{Child: child}
 }
 
@@ -252,7 +254,7 @@ type groupNode struct {
 	fp      uint64
 }
 
-func newGroupNode(ctx context.Context, groupID int, child node) *groupNode {
+func newGroupNode(_ context.Context, groupID int, child node) *groupNode {
 	return &groupNode{GroupID: groupID, Child: child}
 }
 
@@ -282,7 +284,7 @@ type lookAheadNode struct {
 	fp    uint64
 }
 
-func newLookAheadNode(ctx context.Context, child node) *lookAheadNode {
+func newLookAheadNode(_ context.Context, child node) *lookAheadNode {
 	return &lookAheadNode{Child: child}
 }
 
@@ -312,7 +314,7 @@ type lookBehindNode struct {
 	fp    uint64
 }
 
-func newLookBehindNode(ctx context.Context, child node) *lookBehindNode {
+func newLookBehindNode(_ context.Context, child node) *lookBehindNode {
 	return &lookBehindNode{Child: child}
 }
 
@@ -346,7 +348,7 @@ type tagNode struct {
 	fp      uint64
 }
 
-func newTagNode(ctx context.Context, id int, isStart bool) *tagNode {
+func newTagNode(_ context.Context, id int, isStart bool) *tagNode {
 	return &tagNode{Id: id, IsStart: isStart}
 }
 
@@ -381,7 +383,7 @@ type startNode struct {
 	fp uint64
 }
 
-func newStartNode(ctx context.Context) *startNode {
+func newStartNode(_ context.Context) *startNode {
 	return &startNode{}
 }
 
@@ -391,9 +393,9 @@ func (n *startNode) Nullable(ctx context.Context, mctx matchContext) bool {
 func (n *startNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newFalseNode(ctx)
 }
-func (n *startNode) Equals(other node) bool             { _, ok := other.(*startNode); return ok }
-func (n *startNode) Reverse() node                      { return &endNode{} }
-func (n *startNode) String() string                     { return "Start" }
+func (n *startNode) Equals(other node) bool { _, ok := other.(*startNode); return ok }
+func (n *startNode) Reverse() node          { return &endNode{} }
+func (n *startNode) String() string         { return "Start" }
 func (n *startNode) FingerPrint(_ context.Context) uint64 {
 	if n.fp != 0 {
 		return n.fp
@@ -406,7 +408,7 @@ type endNode struct {
 	fp uint64
 }
 
-func newEndNode(ctx context.Context) *endNode {
+func newEndNode(_ context.Context) *endNode {
 	return &endNode{}
 }
 
@@ -416,9 +418,9 @@ func (n *endNode) Nullable(ctx context.Context, mctx matchContext) bool {
 func (n *endNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newFalseNode(ctx)
 }
-func (n *endNode) Equals(other node) bool             { _, ok := other.(*endNode); return ok }
-func (n *endNode) Reverse() node                      { return &startNode{} }
-func (n *endNode) String() string                     { return "End" }
+func (n *endNode) Equals(other node) bool { _, ok := other.(*endNode); return ok }
+func (n *endNode) Reverse() node          { return &startNode{} }
+func (n *endNode) String() string         { return "End" }
 func (n *endNode) FingerPrint(_ context.Context) uint64 {
 	if n.fp != 0 {
 		return n.fp
@@ -431,7 +433,7 @@ type beginTextNode struct {
 	fp uint64
 }
 
-func newBeginTextNode(ctx context.Context) *beginTextNode {
+func newBeginTextNode(_ context.Context) *beginTextNode {
 	return &beginTextNode{}
 }
 
@@ -441,9 +443,9 @@ func (n *beginTextNode) Nullable(ctx context.Context, mctx matchContext) bool {
 func (n *beginTextNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newFalseNode(ctx)
 }
-func (n *beginTextNode) Equals(other node) bool             { _, ok := other.(*beginTextNode); return ok }
-func (n *beginTextNode) Reverse() node                      { return &endTextNode{} }
-func (n *beginTextNode) String() string                     { return "BeginText" }
+func (n *beginTextNode) Equals(other node) bool { _, ok := other.(*beginTextNode); return ok }
+func (n *beginTextNode) Reverse() node          { return &endTextNode{} }
+func (n *beginTextNode) String() string         { return "BeginText" }
 func (n *beginTextNode) FingerPrint(_ context.Context) uint64 {
 	return mixFingerprint(fingerprintSeed, 18)
 }
@@ -452,7 +454,7 @@ type endTextNode struct {
 	fp uint64
 }
 
-func newEndTextNode(ctx context.Context) *endTextNode {
+func newEndTextNode(_ context.Context) *endTextNode {
 	return &endTextNode{}
 }
 
@@ -462,9 +464,9 @@ func (n *endTextNode) Nullable(ctx context.Context, mctx matchContext) bool {
 func (n *endTextNode) Derivative(ctx context.Context, _ byte, _ matchContext) node {
 	return newFalseNode(ctx)
 }
-func (n *endTextNode) Equals(other node) bool             { _, ok := other.(*endTextNode); return ok }
-func (n *endTextNode) Reverse() node                      { return &beginTextNode{} }
-func (n *endTextNode) String() string                     { return "EndText" }
+func (n *endTextNode) Equals(other node) bool { _, ok := other.(*endTextNode); return ok }
+func (n *endTextNode) Reverse() node          { return &beginTextNode{} }
+func (n *endTextNode) String() string         { return "EndText" }
 func (n *endTextNode) FingerPrint(_ context.Context) uint64 {
 	return mixFingerprint(fingerprintSeed, 19)
 }
@@ -473,7 +475,7 @@ type endTextOptionalNewlineNode struct {
 	fp uint64
 }
 
-func newEndTextOptionalNewlineNode(ctx context.Context) *endTextOptionalNewlineNode {
+func newEndTextOptionalNewlineNode(_ context.Context) *endTextOptionalNewlineNode {
 	return &endTextOptionalNewlineNode{}
 }
 
@@ -498,7 +500,7 @@ type wordBoundaryNode struct {
 	fp      uint64
 }
 
-func newWordBoundaryNode(ctx context.Context, unicode bool) *wordBoundaryNode {
+func newWordBoundaryNode(_ context.Context, unicode bool) *wordBoundaryNode {
 	return &wordBoundaryNode{Unicode: unicode}
 }
 
@@ -534,7 +536,7 @@ type notWordBoundaryNode struct {
 	fp      uint64
 }
 
-func newNotWordBoundaryNode(ctx context.Context, unicode bool) *notWordBoundaryNode {
+func newNotWordBoundaryNode(_ context.Context, unicode bool) *notWordBoundaryNode {
 	return &notWordBoundaryNode{Unicode: unicode}
 }
 
