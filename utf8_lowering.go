@@ -1,6 +1,7 @@
 package re3
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -16,11 +17,11 @@ var (
 	runeRangeCache   = make(map[uint64]node)
 )
 
-func newAnyNode() node {
-	return newAnyRuneNode(true)
+func newAnyNode(ctx context.Context) node {
+	return newAnyRuneNode(ctx, true)
 }
 
-func newAnyRuneNode(excludeNewline bool) node {
+func newAnyRuneNode(ctx context.Context, excludeNewline bool) node {
 	var ascii predicate
 	for b := 0; b < 0x80; b++ {
 		if excludeNewline && b == '\n' {
@@ -29,59 +30,59 @@ func newAnyRuneNode(excludeNewline bool) node {
 		ascii[b] = true
 	}
 	var branches []node
-	branches = append(branches, &charClassNode{Pred: ascii})
+	branches = append(branches, newCharClassNode(ctx, "", ascii))
 
 	// 2-byte runes: [C2-DF][80-BF]
-	branches = append(branches, seqNode(
-		byteRangeNode(0xC2, 0xDF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xC2, 0xDF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
 
 	// 3-byte runes.
-	branches = append(branches, seqNode(
-		byteRangeNode(0xE0, 0xE0),
-		byteRangeNode(0xA0, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xE0, 0xE0),
+		byteRangeNode(ctx, 0xA0, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	branches = append(branches, seqNode(
-		byteRangeNode(0xE1, 0xEC),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xE1, 0xEC),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	branches = append(branches, seqNode(
-		byteRangeNode(0xED, 0xED),
-		byteRangeNode(0x80, 0x9F),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xED, 0xED),
+		byteRangeNode(ctx, 0x80, 0x9F),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	branches = append(branches, seqNode(
-		byteRangeNode(0xEE, 0xEF),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xEE, 0xEF),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
 
 	// 4-byte runes.
-	branches = append(branches, seqNode(
-		byteRangeNode(0xF0, 0xF0),
-		byteRangeNode(0x90, 0xBF),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xF0, 0xF0),
+		byteRangeNode(ctx, 0x90, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	branches = append(branches, seqNode(
-		byteRangeNode(0xF1, 0xF3),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xF1, 0xF3),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	branches = append(branches, seqNode(
-		byteRangeNode(0xF4, 0xF4),
-		byteRangeNode(0x80, 0x8F),
-		byteRangeNode(0x80, 0xBF),
-		byteRangeNode(0x80, 0xBF),
+	branches = append(branches, seqNode(ctx,
+		byteRangeNode(ctx, 0xF4, 0xF4),
+		byteRangeNode(ctx, 0x80, 0x8F),
+		byteRangeNode(ctx, 0x80, 0xBF),
+		byteRangeNode(ctx, 0x80, 0xBF),
 	))
-	return unionNodes(branches...)
+	return unionNodes(ctx, branches...)
 }
 
-func byteRangeNode(start, end byte) node {
+func byteRangeNode(ctx context.Context, start, end byte) node {
 	var p predicate
 	for b := start; b <= end; b++ {
 		p[b] = true
@@ -89,27 +90,27 @@ func byteRangeNode(start, end byte) node {
 			break
 		}
 	}
-	return &charClassNode{Pred: p}
+	return newCharClassNode(ctx, "", p)
 }
 
-func seqNode(parts ...node) node {
+func seqNode(ctx context.Context, parts ...node) node {
 	if len(parts) == 0 {
-		return &emptyNode{}
+		return newEmptyNode(ctx)
 	}
 	out := parts[0]
 	for i := 1; i < len(parts); i++ {
-		out = newConcatNode(out, parts[i])
+		out = newConcatNode(ctx, out, parts[i])
 	}
 	return out
 }
 
-func unionNodes(parts ...node) node {
+func unionNodes(ctx context.Context, parts ...node) node {
 	if len(parts) == 0 {
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
 	out := parts[0]
 	for i := 1; i < len(parts); i++ {
-		out = newUnionNode(out, parts[i])
+		out = newUnionNode(ctx, out, parts[i])
 	}
 	return out
 }
@@ -135,10 +136,10 @@ func (n *utf8TrieNode) insert(bs []byte) {
 	cur.term = true
 }
 
-func (n *utf8TrieNode) toNode() node {
+func (n *utf8TrieNode) toNode(ctx context.Context) node {
 	var branches []node
 	if n.term {
-		branches = append(branches, &emptyNode{})
+		branches = append(branches, newEmptyNode(ctx))
 	}
 	if len(n.children) > 0 {
 		keys := make([]int, 0, len(n.children))
@@ -148,15 +149,15 @@ func (n *utf8TrieNode) toNode() node {
 		sort.Ints(keys)
 		for _, k := range keys {
 			b := byte(k)
-			branches = append(branches, seqNode(&literalNode{Value: b}, n.children[b].toNode()))
+			branches = append(branches, seqNode(ctx, newLiteralNode(ctx, b), n.children[b].toNode(ctx)))
 		}
 	}
-	return unionNodes(branches...)
+	return unionNodes(ctx, branches...)
 }
 
-func compileRuneRangeToBytes(min, max rune) node {
+func compileRuneRangeToBytes(ctx context.Context, min, max rune) node {
 	if min > max {
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
 	key := (uint64(min) << 21) | uint64(max)
 	runeRangeCacheMu.RLock()
@@ -178,16 +179,16 @@ func compileRuneRangeToBytes(min, max rune) node {
 			break
 		}
 	}
-	out := root.toNode()
+	out := root.toNode(ctx)
 	runeRangeCacheMu.Lock()
 	runeRangeCache[key] = out
 	runeRangeCacheMu.Unlock()
 	return out
 }
 
-func compileRuneTableToBytes(tab *unicode.RangeTable) node {
+func compileRuneTableToBytes(ctx context.Context, tab *unicode.RangeTable) node {
 	if tab == nil {
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
 	var nodes []node
 	for _, r16 := range tab.R16 {
@@ -195,11 +196,11 @@ func compileRuneTableToBytes(tab *unicode.RangeTable) node {
 		hi := rune(r16.Hi)
 		stride := rune(r16.Stride)
 		if stride == 1 {
-			nodes = append(nodes, compileRuneRangeToBytes(lo, hi))
+			nodes = append(nodes, compileRuneRangeToBytes(ctx, lo, hi))
 			continue
 		}
 		for r := lo; r <= hi; r += stride {
-			nodes = append(nodes, compileRuneRangeToBytes(r, r))
+			nodes = append(nodes, compileRuneRangeToBytes(ctx, r, r))
 		}
 	}
 	for _, r32 := range tab.R32 {
@@ -207,20 +208,20 @@ func compileRuneTableToBytes(tab *unicode.RangeTable) node {
 		hi := rune(r32.Hi)
 		stride := rune(r32.Stride)
 		if stride == 1 {
-			nodes = append(nodes, compileRuneRangeToBytes(lo, hi))
+			nodes = append(nodes, compileRuneRangeToBytes(ctx, lo, hi))
 			continue
 		}
 		for r := lo; r <= hi; r += stride {
-			nodes = append(nodes, compileRuneRangeToBytes(r, r))
+			nodes = append(nodes, compileRuneRangeToBytes(ctx, r, r))
 		}
 	}
 	if len(nodes) == 0 {
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
-	return unionNodes(nodes...)
+	return unionNodes(ctx, nodes...)
 }
 
-func compileRuneTablesToBytes(tabs ...*unicode.RangeTable) node {
+func compileRuneTablesToBytes(ctx context.Context, tabs ...*unicode.RangeTable) node {
 	root := &utf8TrieNode{}
 	var buf [utf8.UTFMax]byte
 	for _, tab := range tabs {
@@ -264,26 +265,26 @@ func compileRuneTablesToBytes(tabs ...*unicode.RangeTable) node {
 			}
 		}
 	}
-	return root.toNode()
+	return root.toNode(ctx)
 }
 
-func compileUnicodeProperty(name string) node {
+func compileUnicodeProperty(ctx context.Context, name string) node {
 	key := normalizeUnicodePropertyName(name)
 	switch key {
 	case "l", "letter":
-		return compileUnicodePropertyCached("letter", func() node {
-			return compileRuneTableToBytes(unicode.Letter)
+		return compileUnicodePropertyCached(ctx, "letter", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Letter)
 		})
 	case "lu", "uppercaseletter":
-		return compileUnicodePropertyCached("lu", func() node {
-			return compileRuneTableToBytes(unicode.Upper)
+		return compileUnicodePropertyCached(ctx, "lu", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Upper)
 		})
 	case "ll", "lowercaseletter":
-		return compileUnicodePropertyCached("ll", func() node {
-			return compileRuneTableToBytes(unicode.Lower)
+		return compileUnicodePropertyCached(ctx, "ll", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Lower)
 		})
 	case "llorlu", "lowerorupper", "lowercaseoruppercase":
-		return compileUnicodePropertyCached("llorlu", func() node {
+		return compileUnicodePropertyCached(ctx, "llorlu", func() node {
 			lower := unicode.Lower
 			if tab, ok := unicode.Properties["Lowercase"]; ok {
 				lower = tab
@@ -296,112 +297,112 @@ func compileUnicodeProperty(name string) node {
 			if tab, ok := unicode.Properties["Titlecase"]; ok {
 				title = tab
 			}
-			return compileRuneTablesToBytes(lower, upper, title)
+			return compileRuneTablesToBytes(ctx, lower, upper, title)
 		})
 	case "lt", "titlecaseletter":
-		return compileUnicodePropertyCached("lt", func() node {
-			return compileRuneTableToBytes(unicode.Title)
+		return compileUnicodePropertyCached(ctx, "lt", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Title)
 		})
 	case "uppercase":
-		return compileUnicodePropertyCached("uppercase", func() node {
+		return compileUnicodePropertyCached(ctx, "uppercase", func() node {
 			if tab, ok := unicode.Properties["Uppercase"]; ok {
-				return compileRuneTableToBytes(tab)
+				return compileRuneTableToBytes(ctx, tab)
 			}
-			return compileRuneTableToBytes(unicode.Upper)
+			return compileRuneTableToBytes(ctx, unicode.Upper)
 		})
 	case "lowercase":
-		return compileUnicodePropertyCached("lowercase", func() node {
+		return compileUnicodePropertyCached(ctx, "lowercase", func() node {
 			if tab, ok := unicode.Properties["Lowercase"]; ok {
-				return compileRuneTableToBytes(tab)
+				return compileRuneTableToBytes(ctx, tab)
 			}
-			return compileRuneTableToBytes(unicode.Lower)
+			return compileRuneTableToBytes(ctx, unicode.Lower)
 		})
 	case "titlecase":
-		return compileUnicodePropertyCached("titlecase", func() node {
-			return compileRuneTableToBytes(unicode.Title)
+		return compileUnicodePropertyCached(ctx, "titlecase", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Title)
 		})
 	case "lm", "modifierletter":
-		return compileUnicodePropertyCached("lm", func() node {
-			return compileRuneTableToBytes(unicode.Lm)
+		return compileUnicodePropertyCached(ctx, "lm", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Lm)
 		})
 	case "lo", "otherletter":
-		return compileUnicodePropertyCached("lo", func() node {
-			return compileRuneTableToBytes(unicode.Lo)
+		return compileUnicodePropertyCached(ctx, "lo", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Lo)
 		})
 	case "m", "mark":
-		return compileUnicodePropertyCached("mark", func() node {
-			return compileRuneTableToBytes(unicode.Mark)
+		return compileUnicodePropertyCached(ctx, "mark", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Mark)
 		})
 	case "mn":
-		return compileUnicodePropertyCached("mn", func() node {
-			return compileRuneTableToBytes(unicode.Mn)
+		return compileUnicodePropertyCached(ctx, "mn", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Mn)
 		})
 	case "mc":
-		return compileUnicodePropertyCached("mc", func() node {
-			return compileRuneTableToBytes(unicode.Mc)
+		return compileUnicodePropertyCached(ctx, "mc", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Mc)
 		})
 	case "me":
-		return compileUnicodePropertyCached("me", func() node {
-			return compileRuneTableToBytes(unicode.Me)
+		return compileUnicodePropertyCached(ctx, "me", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Me)
 		})
 	case "nd", "digit", "number", "n":
-		return compileUnicodePropertyCached("nd", func() node {
-			return compileRuneTableToBytes(unicode.Digit)
+		return compileUnicodePropertyCached(ctx, "nd", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Digit)
 		})
 	case "nl":
-		return compileUnicodePropertyCached("nl", func() node {
-			return compileRuneTableToBytes(unicode.Nl)
+		return compileUnicodePropertyCached(ctx, "nl", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Nl)
 		})
 	case "no":
-		return compileUnicodePropertyCached("no", func() node {
-			return compileRuneTableToBytes(unicode.No)
+		return compileUnicodePropertyCached(ctx, "no", func() node {
+			return compileRuneTableToBytes(ctx, unicode.No)
 		})
 	case "z", "zs", "zl", "zp", "whitespace", "space":
-		return compileUnicodePropertyCached("whitespace", func() node {
-			return compileRuneTableToBytes(unicode.White_Space)
+		return compileUnicodePropertyCached(ctx, "whitespace", func() node {
+			return compileRuneTableToBytes(ctx, unicode.White_Space)
 		})
 	case "pc":
-		return compileUnicodePropertyCached("pc", func() node {
-			return compileRuneTableToBytes(unicode.Pc)
+		return compileUnicodePropertyCached(ctx, "pc", func() node {
+			return compileRuneTableToBytes(ctx, unicode.Pc)
 		})
 	case "joincontrol":
-		return compileUnicodePropertyCached("joincontrol", func() node {
+		return compileUnicodePropertyCached(ctx, "joincontrol", func() node {
 			var rt unicode.RangeTable
 			rt.R16 = []unicode.Range16{{Lo: 0x200C, Hi: 0x200D, Stride: 1}}
-			return compileRuneTableToBytes(&rt)
+			return compileRuneTableToBytes(ctx, &rt)
 		})
 	default:
 		if tab, ok := unicode.Categories[strings.ToUpper(name)]; ok {
-			return compileUnicodePropertyCached("cat:"+strings.ToUpper(name), func() node {
-				return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached(ctx, "cat:"+strings.ToUpper(name), func() node {
+				return compileRuneTableToBytes(ctx, tab)
 			})
 		}
 		if tab, ok := unicode.Scripts[name]; ok {
-			return compileUnicodePropertyCached("script:"+name, func() node {
-				return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached(ctx, "script:"+name, func() node {
+				return compileRuneTableToBytes(ctx, tab)
 			})
 		}
 		if tab, ok := unicode.Properties[name]; ok {
-			return compileUnicodePropertyCached("prop:"+name, func() node {
-				return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached(ctx, "prop:"+name, func() node {
+				return compileRuneTableToBytes(ctx, tab)
 			})
 		}
 		upperName := strings.ToUpper(name)
 		if tab, ok := unicode.Scripts[upperName]; ok {
-			return compileUnicodePropertyCached("script:"+upperName, func() node {
-				return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached(ctx, "script:"+upperName, func() node {
+				return compileRuneTableToBytes(ctx, tab)
 			})
 		}
 		if tab, ok := unicode.Properties[upperName]; ok {
-			return compileUnicodePropertyCached("prop:"+upperName, func() node {
-				return compileRuneTableToBytes(tab)
+			return compileUnicodePropertyCached(ctx, "prop:"+upperName, func() node {
+				return compileRuneTableToBytes(ctx, tab)
 			})
 		}
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
 }
 
-func compileUnicodePropertyCached(key string, build func() node) node {
+func compileUnicodePropertyCached(ctx context.Context, key string, build func() node) node {
 	unicodePropertyCacheMu.RLock()
 	if cached, ok := unicodePropertyCache[key]; ok {
 		unicodePropertyCacheMu.RUnlock()
@@ -428,7 +429,7 @@ func normalizeUnicodePropertyName(name string) string {
 	return strings.ToLower(name)
 }
 
-func parseEscapedClassToken(rs []rune, i *int) (node, bool) {
+func parseEscapedClassToken(ctx context.Context, rs []rune, i *int) (node, bool) {
 	if *i >= len(rs) || rs[*i] != '\\' || *i+1 >= len(rs) {
 		return nil, false
 	}
@@ -438,17 +439,17 @@ func parseEscapedClassToken(rs []rune, i *int) (node, bool) {
 	case 'd', 'w', 's', 'D', 'W', 'S':
 		return &charClassNode{Class: `\` + string(ch)}, true
 	case 'n':
-		return lowerRuneLiteral('\n'), true
+		return lowerRuneLiteral(ctx, '\n'), true
 	case 'r':
-		return lowerRuneLiteral('\r'), true
+		return lowerRuneLiteral(ctx, '\r'), true
 	case 't':
-		return lowerRuneLiteral('\t'), true
+		return lowerRuneLiteral(ctx, '\t'), true
 	case 'v':
-		return lowerRuneLiteral('\v'), true
+		return lowerRuneLiteral(ctx, '\v'), true
 	case 'f':
-		return lowerRuneLiteral('\f'), true
+		return lowerRuneLiteral(ctx, '\f'), true
 	case 'a':
-		return lowerRuneLiteral('\a'), true
+		return lowerRuneLiteral(ctx, '\a'), true
 	case 'p', 'P':
 		if *i+1 < len(rs) && rs[*i+1] == '{' {
 			j := *i + 2
@@ -458,29 +459,29 @@ func parseEscapedClassToken(rs []rune, i *int) (node, bool) {
 			if j < len(rs) {
 				name := string(rs[*i+2 : j])
 				*i = j
-				base := compileUnicodeProperty(name)
+				base := compileUnicodeProperty(ctx, name)
 				if ch == 'P' {
-					return newIntersectNode(newAnyRuneNode(false), newComplementNode(base)), true
+					return newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, base)), true
 				}
 				return base, true
 			}
 		} else if *i+1 < len(rs) {
 			*i++
-			base := compileUnicodeProperty(string(rs[*i]))
+			base := compileUnicodeProperty(ctx, string(rs[*i]))
 			if ch == 'P' {
-				return newIntersectNode(newAnyRuneNode(false), newComplementNode(base)), true
+				return newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, base)), true
 			}
 			return base, true
 		}
 	}
-	return lowerRuneLiteral(ch), true
+	return lowerRuneLiteral(ctx, ch), true
 }
 
-func parseClassAtom(rs []rune, i *int) node {
-	if n, ok := parseEscapedClassToken(rs, i); ok {
+func parseClassAtom(ctx context.Context, rs []rune, i *int) node {
+	if n, ok := parseEscapedClassToken(ctx, rs, i); ok {
 		return n
 	}
-	return lowerRuneLiteral(rs[*i])
+	return lowerRuneLiteral(ctx, rs[*i])
 }
 
 func parseClassAtomRune(rs []rune, i *int) (rune, bool) {
@@ -509,12 +510,12 @@ func parseClassAtomRune(rs []rune, i *int) (rune, bool) {
 	return rs[*i], true
 }
 
-func compileCharClassNode(classStr string, caseInsensitive bool, unicodeMode bool) node {
+func compileCharClassNode(ctx context.Context, classStr string, caseInsensitive bool, unicodeMode bool) node {
 	// Property escapes tokenized directly as tokenCharClass (e.g. \p{L}).
 	if strings.HasPrefix(classStr, `\p{`) || strings.HasPrefix(classStr, `\P{`) {
 		rs := []rune(classStr)
 		i := 0
-		n, ok := parseEscapedClassToken(rs, &i)
+		n, ok := parseEscapedClassToken(ctx, rs, &i)
 		if ok {
 			return n
 		}
@@ -550,7 +551,7 @@ func compileCharClassNode(classStr string, caseInsensitive bool, unicodeMode boo
 			}
 			if caseInsensitive {
 				for r := r1; r <= r2; r++ {
-					appendRuneCaseFold(r, unicodeMode, &bytePred, &hasBytePred, &nodes)
+					appendRuneCaseFold(ctx, r, unicodeMode, &bytePred, &hasBytePred, &nodes)
 					if r == utf8.MaxRune {
 						break
 					}
@@ -567,14 +568,14 @@ func compileCharClassNode(classStr string, caseInsensitive bool, unicodeMode boo
 				hasBytePred = true
 				continue
 			}
-			nodes = append(nodes, compileRuneRangeToBytes(r1, r2))
+			nodes = append(nodes, compileRuneRangeToBytes(ctx, r1, r2))
 			continue
 		}
 		i = atomStart
-		n := parseClassAtom(rs, &i)
+		n := parseClassAtom(ctx, rs, &i)
 		if lit, ok := n.(*literalNode); ok {
 			if caseInsensitive {
-				appendRuneCaseFold(rune(lit.Value), unicodeMode, &bytePred, &hasBytePred, &nodes)
+				appendRuneCaseFold(ctx, rune(lit.Value), unicodeMode, &bytePred, &hasBytePred, &nodes)
 			} else {
 				bytePred[lit.Value] = true
 				hasBytePred = true
@@ -585,19 +586,19 @@ func compileCharClassNode(classStr string, caseInsensitive bool, unicodeMode boo
 	}
 
 	if hasBytePred {
-		nodes = append(nodes, &charClassNode{Pred: bytePred})
+		nodes = append(nodes, newCharClassNode(ctx, "", bytePred))
 	}
 	if len(nodes) == 0 {
-		return &falseNode{}
+		return newFalseNode(ctx)
 	}
-	classNode := unionNodes(nodes...)
+	classNode := unionNodes(ctx, nodes...)
 	if negate {
-		classNode = newIntersectNode(newAnyRuneNode(false), newComplementNode(classNode))
+		classNode = newIntersectNode(ctx, newAnyRuneNode(ctx, false), newComplementNode(ctx, classNode))
 	}
 	return classNode
 }
 
-func appendRuneCaseFold(r rune, unicodeMode bool, bytePred *predicate, hasBytePred *bool, nodes *[]node) {
+func appendRuneCaseFold(ctx context.Context, r rune, unicodeMode bool, bytePred *predicate, hasBytePred *bool, nodes *[]node) {
 	if !unicodeMode {
 		if r >= 'a' && r <= 'z' {
 			(*bytePred)[byte(r)] = true
@@ -627,6 +628,6 @@ func appendRuneCaseFold(r rune, unicodeMode bool, bytePred *predicate, hasBytePr
 			*hasBytePred = true
 			continue
 		}
-		*nodes = append(*nodes, lowerRuneLiteral(fr))
+		*nodes = append(*nodes, lowerRuneLiteral(ctx, fr))
 	}
 }

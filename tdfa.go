@@ -1,5 +1,7 @@
 package re3
 
+import "context"
+
 // tagOp represents a single tag operation: set capture group Id's start or end index.
 type tagOp struct {
 	Id      int
@@ -15,39 +17,39 @@ type tdfaConfig struct {
 // stepTDFA computes the derivative and collects tags simultaneously.
 // It does not call Node.Derivative() so smart constructors never collapse Union.
 // Returns one config per surviving path (e.g. Union returns multiple configs).
-func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
+func stepTDFA(ctx context.Context, n node, c byte, mctx matchContext) []tdfaConfig {
 	switch nd := n.(type) {
 	case *literalNode:
 		if nd.Value == c {
-			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: newEmptyNode(ctx), Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 	case *charClassNode:
-		p := parseCharClass(nd.Class)
+		p := parseCharClass(ctx, nd.Class)
 		if p[c] {
-			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+			return []tdfaConfig{{NextNode: newEmptyNode(ctx), Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 	case *anyNode:
 		if c == '\n' {
-			return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+			return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newEmptyNode(ctx), Tags: nil}}
 	case *falseNode:
-		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 	case *emptyNode:
-		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 	case *tagNode:
-		return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+		return []tdfaConfig{{NextNode: newEmptyNode(ctx), Tags: nil}}
 	case *unionNode:
-		left := stepTDFA(nd.Left, c, ctx)
-		right := stepTDFA(nd.Right, c, ctx)
+		left := stepTDFA(ctx, nd.Left, c, mctx)
+		right := stepTDFA(ctx, nd.Right, c, mctx)
 		return append(left, right...)
 	case *concatNode:
-		leftConfigs := stepTDFA(nd.Left, c, ctx)
+		leftConfigs := stepTDFA(ctx, nd.Left, c, mctx)
 		var result []tdfaConfig
-		if nd.Left.Nullable(ctx) {
-			rightConfigs := stepTDFA(nd.Right, c, ctx)
+		if nd.Left.Nullable(ctx, mctx) {
+			rightConfigs := stepTDFA(ctx, nd.Right, c, mctx)
 			for _, rc := range rightConfigs {
 				tags := rc.Tags
 				if t, ok := nd.Left.(*tagNode); ok {
@@ -69,49 +71,49 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 					tags[len(lc.Tags)] = tagOp{Id: t.Id, IsStart: t.IsStart}
 				}
 			} else {
-				next = newConcatNode(lc.NextNode, nd.Right)
+				next = newConcatNode(ctx, lc.NextNode, nd.Right)
 			}
 			result = append(result, tdfaConfig{NextNode: next, Tags: tags})
 		}
 		return result
 	case *starNode:
-		childConfigs := stepTDFA(nd.Child, c, ctx)
+		childConfigs := stepTDFA(ctx, nd.Child, c, mctx)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
 				result = append(result, tdfaConfig{NextNode: nd, Tags: cc.Tags})
 			} else {
 				result = append(result, tdfaConfig{
-					NextNode: newConcatNode(cc.NextNode, nd),
+					NextNode: newConcatNode(ctx, cc.NextNode, nd),
 					Tags:     cc.Tags,
 				})
 			}
 		}
 		return result
 	case *groupNode:
-		return stepTDFA(nd.Child, c, ctx)
+		return stepTDFA(ctx, nd.Child, c, mctx)
 	case *repeatNode:
 		if nd.Max == 0 {
-			return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+			return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 		}
 		nextMin := nd.Min - 1
 		if nextMin < 0 {
 			nextMin = 0
 		}
 		nextMax := nd.Max - 1
-		nextRepeat := newRepeatNode(nd.Child, nextMin, nextMax)
-		childConfigs := stepTDFA(nd.Child, c, ctx)
+		nextRepeat := newRepeatNode(ctx, nd.Child, nextMin, nextMax)
+		childConfigs := stepTDFA(ctx, nd.Child, c, mctx)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			var next node
 			if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
 				next = nextRepeat
 			} else {
-				next = newConcatNode(cc.NextNode, nextRepeat)
+				next = newConcatNode(ctx, cc.NextNode, nextRepeat)
 			}
 			result = append(result, tdfaConfig{NextNode: next, Tags: cc.Tags})
 		}
-		if nd.Child.Nullable(ctx) && nd.Max > 0 {
+		if nd.Child.Nullable(ctx, mctx) && nd.Max > 0 {
 			currentMin := nextMin
 			currentMax := nextMax
 			for currentMax > 0 {
@@ -120,13 +122,13 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 					currentMin = 0
 				}
 				currentMax--
-				peeled := newRepeatNode(nd.Child, currentMin, currentMax)
+				peeled := newRepeatNode(ctx, nd.Child, currentMin, currentMax)
 				for _, cc := range childConfigs {
 					var next node
 					if _, isEmpty := cc.NextNode.(*emptyNode); isEmpty {
 						next = peeled
 					} else {
-						next = newConcatNode(cc.NextNode, peeled)
+						next = newConcatNode(ctx, cc.NextNode, peeled)
 					}
 					result = append(result, tdfaConfig{NextNode: next, Tags: cc.Tags})
 				}
@@ -134,28 +136,28 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 		}
 		return result
 	case *lookAheadNode:
-		childConfigs := stepTDFA(nd.Child, c, ctx)
+		childConfigs := stepTDFA(ctx, nd.Child, c, mctx)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: &lookAheadNode{Child: cc.NextNode},
+				NextNode: newLookAheadNode(ctx, cc.NextNode),
 				Tags:     cc.Tags,
 			})
 		}
 		return result
 	case *lookBehindNode:
-		childConfigs := stepTDFA(nd.Child, c, ctx)
+		childConfigs := stepTDFA(ctx, nd.Child, c, mctx)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: &lookBehindNode{Child: cc.NextNode},
+				NextNode: newLookBehindNode(ctx, cc.NextNode),
 				Tags:     cc.Tags,
 			})
 		}
 		return result
 	case *intersectNode:
-		leftConfigs := stepTDFA(nd.Left, c, ctx)
-		rightConfigs := stepTDFA(nd.Right, c, ctx)
+		leftConfigs := stepTDFA(ctx, nd.Left, c, mctx)
+		rightConfigs := stepTDFA(ctx, nd.Right, c, mctx)
 		var result []tdfaConfig
 		for _, lc := range leftConfigs {
 			for _, rc := range rightConfigs {
@@ -169,62 +171,50 @@ func stepTDFA(n node, c byte, ctx matchContext) []tdfaConfig {
 		}
 		return result
 	case *complementNode:
-		childConfigs := stepTDFA(nd.Child, c, ctx)
+		childConfigs := stepTDFA(ctx, nd.Child, c, mctx)
 		var result []tdfaConfig
 		for _, cc := range childConfigs {
 			result = append(result, tdfaConfig{
-				NextNode: newComplementNode(cc.NextNode),
+				NextNode: newComplementNode(ctx, cc.NextNode),
 				Tags:     cc.Tags,
 			})
 		}
 		return result
 	case *startNode, *endNode, *beginTextNode, *endTextNode, *endTextOptionalNewlineNode, *wordBoundaryNode, *notWordBoundaryNode:
-		if nd.Nullable(ctx) {
-			return []tdfaConfig{{NextNode: &emptyNode{}, Tags: nil}}
+		if nd.Nullable(ctx, mctx) {
+			return []tdfaConfig{{NextNode: newEmptyNode(ctx), Tags: nil}}
 		}
-		return []tdfaConfig{{NextNode: newFalseNode(), Tags: nil}}
+		return []tdfaConfig{{NextNode: newFalseNode(ctx), Tags: nil}}
 	default:
 		return nil
 	}
 }
 
 // injectCaptureTags replaces each groupNode(id, child) with Concat(Tag(id,start), Concat(child, Tag(id,end))).
-func injectCaptureTags(ast node) node {
+func injectCaptureTags(ctx context.Context, ast node) node {
 	switch n := ast.(type) {
 	case *groupNode:
-		inner := injectCaptureTags(n.Child)
-		return &concatNode{
-			Left: &tagNode{Id: n.GroupID, IsStart: true},
-			Right: &concatNode{
-				Left:  inner,
-				Right: &tagNode{Id: n.GroupID, IsStart: false},
-			},
-		}
+		inner := injectCaptureTags(ctx, n.Child)
+		return newConcatNode(ctx,
+			newTagNode(ctx, n.GroupID, true),
+			newConcatNode(ctx, inner, newTagNode(ctx, n.GroupID, false)),
+		)
 	case *concatNode:
-		return &concatNode{
-			Left:  injectCaptureTags(n.Left),
-			Right: injectCaptureTags(n.Right),
-		}
+		return newConcatNode(ctx, injectCaptureTags(ctx, n.Left), injectCaptureTags(ctx, n.Right))
 	case *unionNode:
-		return &unionNode{
-			Left:  injectCaptureTags(n.Left),
-			Right: injectCaptureTags(n.Right),
-		}
+		return newUnionNode(ctx, injectCaptureTags(ctx, n.Left), injectCaptureTags(ctx, n.Right))
 	case *starNode:
-		return &starNode{Child: injectCaptureTags(n.Child)}
+		return newStarNode(ctx, injectCaptureTags(ctx, n.Child))
 	case *repeatNode:
-		return newRepeatNode(injectCaptureTags(n.Child), n.Min, n.Max)
+		return newRepeatNode(ctx, injectCaptureTags(ctx, n.Child), n.Min, n.Max)
 	case *intersectNode:
-		return &intersectNode{
-			Left:  injectCaptureTags(n.Left),
-			Right: injectCaptureTags(n.Right),
-		}
+		return newIntersectNode(ctx, injectCaptureTags(ctx, n.Left), injectCaptureTags(ctx, n.Right))
 	case *complementNode:
-		return &complementNode{Child: injectCaptureTags(n.Child)}
+		return newComplementNode(ctx, injectCaptureTags(ctx, n.Child))
 	case *lookAheadNode:
-		return &lookAheadNode{Child: injectCaptureTags(n.Child)}
+		return newLookAheadNode(ctx, injectCaptureTags(ctx, n.Child))
 	case *lookBehindNode:
-		return &lookBehindNode{Child: injectCaptureTags(n.Child)}
+		return newLookBehindNode(ctx, injectCaptureTags(ctx, n.Child))
 	default:
 		return ast
 	}
@@ -286,20 +276,20 @@ type lazyTDFA struct {
 	numCaptures int
 }
 
-func newLazyTDFA(taggedRoot node, minterms *mintermTable, numCaptures int) *lazyTDFA {
-	dead := &falseNode{}
+func newLazyTDFA(ctx context.Context, taggedRoot node, minterms *mintermTable, numCaptures int) *lazyTDFA {
+	dead := newFalseNode(ctx)
 	dfa := &lazyTDFA{
 		root:        taggedRoot,
 		minterms:    minterms,
 		stateASTs:   []node{taggedRoot, dead},
 		stateIndex:  make(map[uint64][]int, 2),
 		transitions: make([][]tdfaTransition, 2),
-		isMatch:     []bool{taggedRoot.Nullable(matchContext{}), false},
+		isMatch:     []bool{taggedRoot.Nullable(ctx, matchContext{}), false},
 		deadStateID: 1,
 		numCaptures: numCaptures,
 	}
-	dfa.indexState(0, taggedRoot)
-	dfa.indexState(1, dead)
+	dfa.indexState(ctx, 0, taggedRoot)
+	dfa.indexState(ctx, 1, dead)
 	dfa.transitions[0] = make([]tdfaTransition, minterms.NumClasses)
 	dfa.transitions[1] = make([]tdfaTransition, minterms.NumClasses)
 	for i := 0; i < minterms.NumClasses; i++ {
@@ -313,7 +303,7 @@ func newLazyTDFA(taggedRoot node, minterms *mintermTable, numCaptures int) *lazy
 }
 
 // getNextState returns (nextStateID, tagOps). tagOps are applied when taking the transition.
-func (dfa *lazyTDFA) getNextState(stateID, mintermID int, ctx matchContext) (nextStateID int, tagOps []tagOp) {
+func (dfa *lazyTDFA) getNextState(ctx context.Context, stateID, mintermID int, mctx matchContext) (nextStateID int, tagOps []tagOp) {
 	if stateID == dfa.deadStateID {
 		return dfa.deadStateID, nil
 	}
@@ -333,13 +323,13 @@ func (dfa *lazyTDFA) getNextState(stateID, mintermID int, ctx matchContext) (nex
 		return t.Next, t.Tags
 	}
 	b := dfa.minterms.ClassToByte[mintermID]
-	configs := stepTDFA(dfa.stateASTs[stateID], b, ctx)
+	configs := stepTDFA(ctx, dfa.stateASTs[stateID], b, mctx)
 	if len(configs) == 0 {
 		row[mintermID] = tdfaTransition{Next: dfa.deadStateID, Tags: nil}
 		return dfa.deadStateID, nil
 	}
 	chosen := configs[0]
-	nextStateID = dfa.lookupState(chosen.NextNode)
+	nextStateID = dfa.lookupState(ctx, chosen.NextNode)
 	if nextStateID < 0 {
 		if len(dfa.stateASTs) >= maxLazyTDFAStates {
 			row[mintermID] = tdfaTransition{Next: dfa.deadStateID, Tags: nil}
@@ -347,8 +337,8 @@ func (dfa *lazyTDFA) getNextState(stateID, mintermID int, ctx matchContext) (nex
 		}
 		nextStateID = len(dfa.stateASTs)
 		dfa.stateASTs = append(dfa.stateASTs, chosen.NextNode)
-		dfa.indexState(nextStateID, chosen.NextNode)
-		dfa.isMatch = append(dfa.isMatch, chosen.NextNode.Nullable(ctx))
+		dfa.indexState(ctx, nextStateID, chosen.NextNode)
+		dfa.isMatch = append(dfa.isMatch, chosen.NextNode.Nullable(ctx, mctx))
 		newRow := make([]tdfaTransition, dfa.minterms.NumClasses)
 		for i := range newRow {
 			newRow[i].Next = -1
@@ -364,8 +354,8 @@ func (dfa *lazyTDFA) getNextState(stateID, mintermID int, ctx matchContext) (nex
 	return nextStateID, tags
 }
 
-func (dfa *lazyTDFA) lookupState(candidate node) int {
-	fp := candidate.FingerPrint()
+func (dfa *lazyTDFA) lookupState(ctx context.Context, candidate node) int {
+	fp := candidate.FingerPrint(ctx)
 	bucket := dfa.stateIndex[fp]
 	for _, stateID := range bucket {
 		if dfa.stateASTs[stateID].Equals(candidate) {
@@ -375,8 +365,8 @@ func (dfa *lazyTDFA) lookupState(candidate node) int {
 	return -1
 }
 
-func (dfa *lazyTDFA) indexState(stateID int, ast node) {
-	fp := ast.FingerPrint()
+func (dfa *lazyTDFA) indexState(ctx context.Context, stateID int, ast node) {
+	fp := ast.FingerPrint(ctx)
 	dfa.stateIndex[fp] = append(dfa.stateIndex[fp], stateID)
 }
 
@@ -387,17 +377,17 @@ func (dfa *lazyTDFA) isAccepting(stateID int) bool {
 	return dfa.isMatch[stateID]
 }
 
-func (dfa *lazyTDFA) isAcceptingWithContext(stateID int, ctx matchContext) bool {
+func (dfa *lazyTDFA) isAcceptingWithContext(ctx context.Context, stateID int, mctx matchContext) bool {
 	if stateID < 0 || stateID >= len(dfa.stateASTs) {
 		return false
 	}
-	return dfa.stateASTs[stateID].Nullable(ctx)
+	return dfa.stateASTs[stateID].Nullable(ctx, mctx)
 }
 
 // runTDFA runs the TDFA on s (typically the match span from two-pass) and fills
 // a flat []int of length (numCaptures+1)*2: for slot i, start=capture[2*i], end=capture[2*i+1].
 // Slot 0 is the full match; slots 1..numCaptures are capture groups. -1 means unmatched.
-func (dfa *lazyTDFA) runTDFA(s string) []int {
+func (dfa *lazyTDFA) runTDFA(ctx context.Context, s string) []int {
 	ncap := dfa.numCaptures + 1
 	capture := make([]int, ncap*2)
 	for i := 0; i < ncap*2; i++ {
@@ -407,7 +397,7 @@ func (dfa *lazyTDFA) runTDFA(s string) []int {
 	pos := 0
 	for pos <= len(s) {
 		ctxAtPos := makeMatchContextString(s, pos)
-		if dfa.isAcceptingWithContext(state, ctxAtPos) {
+		if dfa.isAcceptingWithContext(ctx, state, ctxAtPos) {
 			capture[0] = 0
 			capture[1] = pos
 		}
@@ -415,8 +405,7 @@ func (dfa *lazyTDFA) runTDFA(s string) []int {
 			break
 		}
 		mintermID := dfa.minterms.ByteToClass[s[pos]]
-		ctx := makeMatchContextString(s, pos)
-		nextState, tags := dfa.getNextState(state, mintermID, ctx)
+		nextState, tags := dfa.getNextState(ctx, state, mintermID, ctxAtPos)
 		for _, t := range tags {
 			if t.Id >= ncap {
 				continue
@@ -439,7 +428,7 @@ func (dfa *lazyTDFA) runTDFA(s string) []int {
 	if state == dfa.deadStateID {
 		return nil
 	}
-	if !dfa.isAcceptingWithContext(state, makeMatchContextString(s, pos)) {
+	if !dfa.isAcceptingWithContext(ctx, state, makeMatchContextString(s, pos)) {
 		return nil
 	}
 	if capture[0] < 0 {
