@@ -176,9 +176,6 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 	if re.llOrLuRepeat > 0 {
 		return findLlOrLuRepeatFrom(s, from, re.llOrLuRepeat)
 	}
-	if re.hasAssertions {
-		return re.findStringIndexFromWithAssertions(ctx, s, from)
-	}
 
 	bytePos := from
 	if len(re.prefix) > 0 {
@@ -223,6 +220,11 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 	}
 	state := 0
 	for firstEnd == -1 && bytePos < len(s) {
+		// Empty at current position: some alternations (e.g. ^|a$) are not reported by unanchored initial acceptance.
+		if re.hasAssertions && re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, bytePos)) {
+			firstEnd = bytePos
+			break
+		}
 		mintermID := re.minterms.ByteToClass[s[bytePos]]
 		mctx := matchContext{}
 		if re.hasAssertions {
@@ -272,7 +274,10 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 	}
 	revStartAccepts := re.reverse.isAccepting(0)
 	if re.hasAssertions {
-		revStartAccepts = re.reverse.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, firstEnd))
+		// At firstEnd we have consumed no input in the reverse direction, so we are at "start" of the reverse pass.
+		// When firstEnd == from the match is empty, so the reverse sees empty input and both AtStart and AtEnd hold.
+		revCtx := matchContext{AtStart: true, AtEnd: firstEnd >= len(s) || firstEnd == from}
+		revStartAccepts = re.reverse.isAcceptingWithContext(ctx, 0, revCtx)
 	}
 	if leftmostStart == -1 && revStartAccepts {
 		leftmostStart = firstEnd
@@ -315,88 +320,6 @@ func (re *regexpImpl) findStringIndexFrom(ctx context.Context, s string, from in
 	}
 
 	return []int{leftmostStart, longestEnd}
-}
-
-func (re *regexpImpl) findStringIndexFromWithAssertions(ctx context.Context, s string, from int) []int {
-	start := from
-	if len(re.prefix) > 0 {
-		idx := strings.Index(s[start:], re.prefix)
-		if idx < 0 {
-			return nil
-		}
-		start += idx
-	} else if len(re.prefixAny) > 0 {
-		idx := strings.IndexAny(s[start:], re.prefixAny)
-		if idx < 0 {
-			return nil
-		}
-		start += idx
-	}
-	for ; start <= len(s); start++ {
-		maybeCountCandidateStart()
-		if re.earlyByte != 0 && (start+re.earlyLiteralOffset >= len(s) || s[start+re.earlyLiteralOffset] != re.earlyByte) {
-			next := start + 1
-			if len(re.prefix) > 0 {
-				idx := strings.Index(s[next:], re.prefix)
-				if idx < 0 {
-					return nil
-				}
-				start = next + idx - 1
-			} else if len(re.prefixAny) > 0 {
-				idx := strings.IndexAny(s[next:], re.prefixAny)
-				if idx < 0 {
-					return nil
-				}
-				start = next + idx - 1
-			}
-			continue
-		}
-		state := 0
-		longestEnd := -1
-
-		if re.forward.isAcceptingWithContext(ctx, 0, makeMatchContextString(s, start)) {
-			longestEnd = start
-		}
-
-		scanStart := start
-		for pos := start; pos < len(s); pos++ {
-			mintermID := re.minterms.ByteToClass[s[pos]]
-			mctx := makeMatchContextString(s, pos)
-			state = re.forward.getNextState(ctx, state, mintermID, mctx)
-			if state == re.forward.deadStateID {
-				maybeCountBytesScanned(pos - scanStart + 1)
-				break
-			}
-			if re.forward.isAcceptingWithContext(ctx, state, makeMatchContextString(s, pos+1)) {
-				longestEnd = pos + 1
-			}
-		}
-		if state != re.forward.deadStateID {
-			maybeCountBytesScanned(len(s) - scanStart)
-		}
-
-		if longestEnd >= 0 {
-			return []int{start, longestEnd}
-		}
-		// Advance to next prefilter candidate (interim containment: skip to next prefix/prefixAny).
-		nextStart := start + 1
-		if len(re.prefix) > 0 {
-			idx := strings.Index(s[nextStart:], re.prefix)
-			if idx < 0 {
-				return nil
-			}
-			start = nextStart + idx
-		} else if len(re.prefixAny) > 0 {
-			idx := strings.IndexAny(s[nextStart:], re.prefixAny)
-			if idx < 0 {
-				return nil
-			}
-			start = nextStart + idx
-		} else {
-			start = nextStart
-		}
-	}
-	return nil
 }
 
 func findLlOrLuRepeatFrom(s string, from, need int) []int {
